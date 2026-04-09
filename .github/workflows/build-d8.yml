@@ -6,15 +6,20 @@
 # Secrets: ZERO — compilacao V8 usa apenas codigo publico
 # Custo: $0
 #
-# Configs disponiveis:
+# SANDBOX ESCAPE configs (COM Memory Corruption API, SEM sanitizers):
 #   fast    — Release + dcheck + component build (iteracao rapida de PoC)
 #   fuzz    — Release + dcheck + static (fuzzing com crash filter)
 #   debug   — Full debug + verify_heap + full symbols (GDB/LLDB)
 #   release — Release puro sem dcheck (layout = producao)
 #
-# IMPORTANTE: ASAN NAO pode ser combinado com Memory Corruption API.
-#             O crash filter precisa interceptar SIGSEGV/SIGBUS diretamente.
-#             V8 BUILD.gn tem assert explicito bloqueando is_asan + memory_corruption_api.
+# SANITIZER configs (SEM Memory Corruption API — incompativel!):
+#   asan    — Address Sanitizer (UAF, buffer overflow, heap OOB)
+#   tsan    — Thread Sanitizer (data races)
+#   ubsan   — Undefined Behavior Sanitizer (integer overflow, type confusion)
+#
+# NUNCA misturar sanitizers com Memory Corruption API!
+# ASAN sequestra SIGSEGV, crash filter nao funciona.
+# V8 BUILD.gn tem assert bloqueando is_asan + memory_corruption_api.
 ###############################################################################
 name: "Build d8 (V8 Sandbox Escape Lab)"
 
@@ -36,6 +41,9 @@ on:
           - fuzz
           - debug
           - release
+          - asan
+          - tsan
+          - ubsan
 
 # ZERO triggers automaticos — sem push, sem PR, sem schedule
 # Apenas workflow_dispatch (manual)
@@ -244,21 +252,32 @@ jobs:
           OUT="v8-build/v8/out/d8-${CONFIG}"
           mkdir -p "$OUT"
 
-          # Base comum a TODOS os configs
-          cat > "$OUT/args.gn" << 'BASEEOF'
+          # DUAS BASES: sanitizer (sem memory_corruption_api) vs sandbox (com)
+          case "$CONFIG" in
+            asan|tsan|ubsan)
+              cat > "$OUT/args.gn" << 'SANEOF'
+          v8_enable_sandbox = true
+          v8_enable_memory_corruption_api = false
+          target_cpu = "x64"
+          treat_warnings_as_errors = false
+          cc_wrapper = "env CCACHE_SLOPPINESS=time_macros ccache"
+          SANEOF
+              ;;
+            *)
+              cat > "$OUT/args.gn" << 'SBXEOF'
           v8_enable_sandbox = true
           v8_enable_memory_corruption_api = true
           target_cpu = "x64"
           is_asan = false
           treat_warnings_as_errors = false
           cc_wrapper = "env CCACHE_SLOPPINESS=time_macros ccache"
-          BASEEOF
+          SBXEOF
+              ;;
+          esac
 
-          # Config-specific
           case "$CONFIG" in
             fast)
               cat >> "$OUT/args.gn" << 'EOF'
-          # d8-fast: iteracao rapida (component build, dcheck, symbols=1)
           is_debug = false
           dcheck_always_on = true
           is_component_build = true
@@ -270,7 +289,6 @@ jobs:
               ;;
             fuzz)
               cat >> "$OUT/args.gn" << 'EOF'
-          # d8-fuzz: fuzzing com crash filter (static, dcheck, symbols=0)
           is_debug = false
           dcheck_always_on = true
           is_component_build = false
@@ -279,7 +297,6 @@ jobs:
               ;;
             debug)
               cat >> "$OUT/args.gn" << 'EOF'
-          # d8-debug: full debug (GDB/LLDB, verify_heap, full symbols)
           is_debug = true
           v8_optimized_debug = false
           v8_no_inline = true
@@ -294,11 +311,41 @@ jobs:
               ;;
             release)
               cat >> "$OUT/args.gn" << 'EOF'
-          # d8-release: layout proximo de producao (sem dcheck, sem symbols)
           is_debug = false
           dcheck_always_on = false
           is_component_build = false
           symbol_level = 0
+          EOF
+              ;;
+            asan)
+              cat >> "$OUT/args.gn" << 'EOF'
+          is_asan = true
+          is_debug = false
+          dcheck_always_on = true
+          is_component_build = false
+          symbol_level = 1
+          v8_enable_backtrace = true
+          EOF
+              ;;
+            tsan)
+              cat >> "$OUT/args.gn" << 'EOF'
+          is_tsan = true
+          is_debug = false
+          dcheck_always_on = true
+          is_component_build = false
+          symbol_level = 1
+          v8_enable_backtrace = true
+          EOF
+              ;;
+            ubsan)
+              cat >> "$OUT/args.gn" << 'EOF'
+          is_ubsan = true
+          is_ubsan_vptr = true
+          is_debug = false
+          dcheck_always_on = true
+          is_component_build = false
+          symbol_level = 1
+          v8_enable_backtrace = true
           EOF
               ;;
           esac
