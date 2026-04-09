@@ -58,7 +58,7 @@ jobs:
       # STEP 1: Checkout (apenas para ter o workflow file)
       # ================================================================
       - name: Checkout workflows
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           sparse-checkout: .github
           sparse-checkout-cone-mode: true
@@ -167,7 +167,7 @@ jobs:
       # STEP 5: Cache depot_tools (evita re-download)
       # ================================================================
       - name: Cache depot_tools
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: depot_tools
           key: depot-tools-v1
@@ -189,7 +189,7 @@ jobs:
       # STEP 6: Cache ccache (acelera rebuilds)
       # ================================================================
       - name: Cache ccache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.ccache
           key: ccache-chrome-${{ inputs.v8_config }}-${{ steps.version.outputs.V8_VERSION }}
@@ -413,7 +413,7 @@ jobs:
       # STEP 11: Upload artifact
       # ================================================================
       - name: Upload d8 artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: d8-${{ inputs.v8_config }}-chrome-${{ steps.version.outputs.V8_VERSION }}
           path: |
@@ -427,7 +427,7 @@ jobs:
 
       - name: Upload core dumps (se existirem)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coredumps-${{ inputs.v8_config }}-${{ steps.version.outputs.V8_VERSION }}
           path: /tmp/coredumps/
