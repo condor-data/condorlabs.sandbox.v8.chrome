@@ -200,6 +200,18 @@ jobs:
       # ================================================================
       # STEP 7: Fetch V8 source (do googlesource, NAO do fork)
       # ================================================================
+      # ================================================================
+      # Cache V8 source (repo publico = 10GB gratis)
+      # Economiza ~10min de 'fetch v8' + gclient sync
+      # ================================================================
+      - name: Cache V8 source tree
+        uses: actions/cache@v5
+        with:
+          path: v8-build
+          key: v8-source-${{ steps.version.outputs.V8_VERSION }}
+          restore-keys: |
+            v8-source-
+
       - name: Fetch V8 ${{ steps.version.outputs.V8_VERSION }}
         run: |
           set -euo pipefail
@@ -261,28 +273,40 @@ jobs:
       - name: Install PyYAML
         run: pip3 install pyyaml
 
-      - name: Validate YAML config
+      # ================================================================
+      # PRE-BUILD: Validacao completa do YAML (NADA hardcoded)
+      # ================================================================
+      - name: "[PRE] Validate config from YAML"
         run: |
           set -euo pipefail
-          CONFIG="${{ inputs.v8_config }}"
-          python3 configs/yaml2gn.py configs/v8-chrome.yaml "$CONFIG" --validate || {
-            echo "::error::YAML VALIDATION FAILED! Config '${CONFIG}' tem erros."
-            echo "::error::Edite configs/v8-chrome.yaml e corrija."
+          python3 configs/verify-build.py pre configs/v8-chrome.yaml "${{ inputs.v8_config }}" || {
+            echo "::error::PRE-BUILD VALIDATION FAILED!"
+            echo "::error::O YAML configs/v8-chrome.yaml tem problemas no config '${{ inputs.v8_config }}'."
             exit 1
           }
 
-      - name: Generate args.gn from YAML (${{ inputs.v8_config }})
+      - name: "[PRE] Generate args.gn from YAML"
         run: |
           set -euo pipefail
           CONFIG="${{ inputs.v8_config }}"
           OUT="v8-build/v8/out/d8-${CONFIG}"
           mkdir -p "$OUT"
           python3 configs/yaml2gn.py configs/v8-chrome.yaml "$CONFIG" > "$OUT/args.gn" || {
-            echo "::error::yaml2gn.py FALHOU! Config pode estar malformado."
+            echo "::error::yaml2gn.py FALHOU!"
             exit 1
           }
-          echo "=== Generated args.gn (from YAML) ==="
-          cat "$OUT/args.gn"
+
+      - name: "[PRE] Verify args.gn matches YAML (flag-by-flag)"
+        run: |
+          set -euo pipefail
+          CONFIG="${{ inputs.v8_config }}"
+          python3 configs/verify-build.py verify-args configs/v8-chrome.yaml "$CONFIG" "v8-build/v8/out/d8-${CONFIG}/args.gn" || {
+            echo "::error::args.gn NAO CORRESPONDE ao YAML!"
+            echo "::error::Flags divergentes detectadas. Build abortado."
+            exit 1
+          }
+          echo "=== args.gn validado (matches YAML) ==="
+          cat "v8-build/v8/out/d8-${CONFIG}/args.gn"
 
       - name: Build d8 (${{ inputs.v8_config }})
         run: |
@@ -315,99 +339,42 @@ jobs:
       # ================================================================
       # STEP 10: Validar build (GRITA se falhar)
       # ================================================================
-      - name: Validate d8 build
+      # ================================================================
+      # POST-BUILD: Validacao do binario contra YAML (NADA hardcoded)
+      # ================================================================
+      - name: "[POST] Validate d8 against YAML config"
         run: |
           set -euo pipefail
           CONFIG="${{ inputs.v8_config }}"
           D8="./v8-build/v8/out/d8-${CONFIG}/d8"
 
-          echo "=== [1] d8 executa JavaScript ==="
-          $D8 -e "print('hello from d8')" || {
-            echo "::error::d8 NAO EXECUTA! Binario corrompido ou shared libs faltando."
+          python3 configs/verify-build.py post configs/v8-chrome.yaml "$CONFIG" "$D8" || {
+            echo "::error::POST-BUILD VALIDATION FAILED!"
+            echo "::error::O d8 compilado NAO corresponde ao que o YAML pediu."
             exit 1
           }
 
-          echo "=== [2] V8 version ==="
-          $D8 -e "print('V8 version: ' + version())"
+      - name: "[POST] Update build status in YAML"
+        if: always()
+        run: |
+          CONFIG="${{ inputs.v8_config }}"
+          D8="./v8-build/v8/out/d8-${CONFIG}/d8"
+          VERSION=$($D8 -e "print(version())" 2>/dev/null || echo "unknown")
+          SIZE=$(du -sh "$D8" 2>/dev/null | cut -f1 || echo "unknown")
 
-          echo "=== [3] Natives syntax + GC ==="
-          $D8 --allow-natives-syntax --expose-gc -e "
-            gc();
-            let o = {x: 42};
-            %DebugPrint(o);
-            print('Natives+GC: OK');
-          " || {
-            echo "::error::--allow-natives-syntax ou --expose-gc FALHOU!"
-            exit 1
-          }
+          if [ "${{ job.status }}" = "success" ]; then
+            python3 configs/verify-build.py update-status configs/v8-chrome.yaml "$CONFIG" "OK" "$VERSION" "$SIZE"
+          else
+            python3 configs/verify-build.py update-status configs/v8-chrome.yaml "$CONFIG" "FAIL" "$VERSION" "$SIZE"
+          fi
 
-          # Bifurcar validacao: sanitizer vs sandbox escape
-          case "$CONFIG" in
-            asan|tsan|ubsan)
-              echo "=== [4] SANITIZER: Confirmar Sandbox API AUSENTE ==="
-              STYPE=$($D8 --sandbox-testing -e "print(typeof Sandbox)" 2>&1 | tail -1) || true
-              if [ "$STYPE" = "object" ]; then
-                echo "::error::BUG DE CONFIG: Sandbox API EXPOSTA em build sanitizer!"
-                echo "::error::memory_corruption_api deveria ser false!"
-                exit 1
-              fi
-              echo "Sandbox API ausente: CORRETO para sanitizer build"
-
-              echo "=== [5] SANITIZER: d8 executa sem crash ==="
-              $D8 -e "
-                let arr = new Array(1000);
-                for (let i = 0; i < 1000; i++) arr[i] = {x: i};
-                print('Sanitizer stress test: OK');
-              " || {
-                echo "::error::Sanitizer detectou problema na execucao basica!"
-                exit 1
-              }
-
-              echo ""
-              echo "========================================="
-              echo "  SANITIZER BUILD VALIDADO"
-              echo "  Config:  ${CONFIG}"
-              echo "  V8:      $($D8 -e 'print(version())')"
-              echo "  Binary:  $(du -sh $D8 | cut -f1)"
-              echo "  NOTA:    Sandbox API NAO disponivel (correto)"
-              echo "========================================="
-              ;;
-            *)
-              echo "=== [4] Sandbox API exposta ==="
-              STYPE=$($D8 --sandbox-testing -e "print(typeof Sandbox)" 2>&1 | tail -1)
-              if [ "$STYPE" != "object" ]; then
-                echo "::error::SANDBOX API NAO EXPOSTA!"
-                echo "::error::typeof Sandbox = '${STYPE}'"
-                echo "::error::v8_enable_memory_corruption_api=true pode nao ter funcionado!"
-                exit 1
-              fi
-              echo "Sandbox API: OK"
-
-              echo "=== [5] Sandbox.MemoryView + addrof + getSizeOf ==="
-              $D8 --sandbox-testing -e "
-                let m = new DataView(new Sandbox.MemoryView(0, 0x100));
-                print('MemoryView: OK');
-                print('Sandbox.base: ' + Sandbox.base);
-                let obj = {a: 1};
-                let addr = Sandbox.getAddressOf(obj);
-                let size = Sandbox.getSizeOf(obj);
-                print('addrof: 0x' + addr.toString(16));
-                print('sizeof: ' + size + ' bytes');
-                if (size <= 0) throw new Error('getSizeOf <= 0!');
-              " || {
-                echo "::error::Sandbox API FALHOU!"
-                exit 1
-              }
-
-              echo ""
-              echo "========================================="
-              echo "  SANDBOX ESCAPE BUILD VALIDADO"
-              echo "  Config:  ${CONFIG}"
-              echo "  V8:      $($D8 -e 'print(version())')"
-              echo "  Binary:  $(du -sh $D8 | cut -f1)"
-              echo "========================================="
-              ;;
-          esac
+          # Commit status update
+          git config user.name "condor-data-bot"
+          git config user.email "bot@condor-data.github.io"
+          git add configs/v8-chrome.yaml
+          git diff --cached --stat
+          git commit -m "Update build status: ${CONFIG} = ${{ job.status }} (V8 ${VERSION})" || true
+          git push || echo "::warning::Push failed (concurrent update?)"
 
       # ================================================================
       # STEP 11: Upload artifact
