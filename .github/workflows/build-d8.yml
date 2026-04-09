@@ -1,25 +1,14 @@
 ###############################################################################
-# Build d8 com V8 Sandbox Memory Corruption API
+# Build d8 — V8 Sandbox Escape Lab
 #
-# Runner: ubuntu-latest (4 vCPU, 16GB RAM, 14GB SSD) — GRATIS para public repos
-# Trigger: APENAS manual (workflow_dispatch) — ZERO triggers automaticos
-# Secrets: ZERO — compilacao V8 usa apenas codigo publico
-# Custo: $0
+# Pipeline: 4 fases (composite actions no mesmo runner)
+#   Phase 1: pre-validate   — YAML validate + args.gn gen + verify (~30s)
+#   Phase 2: setup-v8       — deps + cache + fetch V8 (~10min)
+#   Phase 3: build-d8       — gn gen + autoninja (~15min)
+#   Phase 4: post-validate  — test + introspect + artifacts + status (~60s)
 #
-# SANDBOX ESCAPE configs (COM Memory Corruption API, SEM sanitizers):
-#   fast    — Release + dcheck + component build (iteracao rapida de PoC)
-#   fuzz    — Release + dcheck + static (fuzzing com crash filter)
-#   debug   — Full debug + verify_heap + full symbols (GDB/LLDB)
-#   release — Release puro sem dcheck (layout = producao)
-#
-# SANITIZER configs (SEM Memory Corruption API — incompativel!):
-#   asan    — Address Sanitizer (UAF, buffer overflow, heap OOB)
-#   tsan    — Thread Sanitizer (data races)
-#   ubsan   — Undefined Behavior Sanitizer (integer overflow, type confusion)
-#
-# NUNCA misturar sanitizers com Memory Corruption API!
-# ASAN sequestra SIGSEGV, crash filter nao funciona.
-# V8 BUILD.gn tem assert bloqueando is_asan + memory_corruption_api.
+# Tudo lido do YAML. Nada hardcoded. YAML eh a unica fonte de verdade.
+# Trigger: APENAS manual. Secrets: ZERO. Custo: $0.
 ###############################################################################
 name: "Build d8 (V8 Sandbox Escape Lab)"
 
@@ -32,7 +21,7 @@ on:
         default: ""
         type: string
       v8_config:
-        description: "Build config"
+        description: "Build config (do configs/v8-chrome.yaml)"
         required: true
         default: "fast"
         type: choice
@@ -45,39 +34,29 @@ on:
           - tsan
           - ubsan
 
-# ZERO triggers automaticos — sem push, sem PR, sem schedule
-# Apenas workflow_dispatch (manual)
+permissions:
+  contents: write  # necessario para git push do status update
 
 jobs:
-  build-d8:
+  pipeline:
     runs-on: ubuntu-latest
-    timeout-minutes: 180  # 3h max (V8 compila em ~25min, margem ampla)
+    timeout-minutes: 180
 
     steps:
-      # ================================================================
-      # STEP 1: Checkout (apenas para ter o workflow file)
-      # ================================================================
-      - name: Checkout workflows
+      # ==================================================================
+      # CHECKOUT + VERSION DETECT
+      # ==================================================================
+      - name: Checkout
         uses: actions/checkout@v6
-        with:
-          sparse-checkout: .github
-          sparse-checkout-cone-mode: true
 
-      # ================================================================
-      # STEP 2: Auto-detect V8 version do Chrome stable
-      # ================================================================
       - name: Detect V8 version
         id: version
         run: |
           set -euo pipefail
-
           if [ -n "${{ inputs.v8_version }}" ]; then
             V8_VER="${{ inputs.v8_version }}"
             echo "::notice::OVERRIDE MANUAL: V8 ${V8_VER}"
           else
-            echo "::group::Auto-detecting Chrome stable V8 version..."
-
-            # 1. Pegar branch estavel do Chrome
             STABLE_BRANCH=$(curl -sf --max-time 15 'https://chromiumdash.appspot.com/fetch_milestones' | \
               python3 -c "
           import json, sys
@@ -86,342 +65,58 @@ jobs:
               if m.get('schedule_phase') == 'stable' and m.get('schedule_active'):
                   print(m['v8_branch'])
                   break
-          ") || { echo "::error::FALHA ao detectar V8 branch do Chrome! API indisponivel."; exit 1; }
+          ") || { echo "::error::FALHA ao detectar V8 branch!"; exit 1; }
 
-            if [ -z "$STABLE_BRANCH" ]; then
-              echo "::error::FALHA ao detectar branch estavel do Chrome!"
-              echo "::error::chromiumdash.appspot.com pode estar fora do ar."
-              echo "::error::Use o input v8_version para especificar manualmente."
-              exit 1
-            fi
-            echo "Chrome stable V8 branch: ${STABLE_BRANCH}"
+            [ -z "$STABLE_BRANCH" ] && { echo "::error::Branch vazio!"; exit 1; }
 
-            # 2. Pegar ultima tag patch dessa branch
-            V8_VER=$(git ls-remote --tags https://chromium.googlesource.com/v8/v8.git "${STABLE_BRANCH}.*" 2>/dev/null | \
-              awk '{print $2}' | sed 's|refs/tags/||' | sort -V | tail -1) || { echo "::error::git ls-remote FALHOU!"; exit 1; }
+            V8_VER=$(git ls-remote --tags https://chromium.googlesource.com/v8/v8.git "${STABLE_BRANCH}.*" | \
+              awk '{print $2}' | sed 's|refs/tags/||' | sort -V | tail -1) || \
+              { echo "::error::git ls-remote FALHOU!"; exit 1; }
 
-            if [ -z "$V8_VER" ]; then
-              echo "::error::NENHUMA TAG encontrada para branch ${STABLE_BRANCH}!"
-              echo "::error::git ls-remote pode ter falhado ou a branch nao tem tags."
-              echo "::error::Use o input v8_version para especificar manualmente."
-              exit 1
-            fi
-
-            echo "::endgroup::"
-            echo "::notice::Auto-detected: V8 ${V8_VER} (Chrome stable branch ${STABLE_BRANCH})"
+            [ -z "$V8_VER" ] && { echo "::error::Nenhuma tag para ${STABLE_BRANCH}!"; exit 1; }
+            echo "::notice::Auto-detected: V8 ${V8_VER}"
           fi
 
-          # Extrair major.minor para branch-heads
           V8_BRANCH="branch-heads/$(echo $V8_VER | cut -d. -f1,2)"
           echo "V8_VERSION=${V8_VER}" >> $GITHUB_OUTPUT
           echo "V8_BRANCH=${V8_BRANCH}" >> $GITHUB_OUTPUT
-          echo "V8_CONFIG=${{ inputs.v8_config }}" >> $GITHUB_OUTPUT
 
-      # ================================================================
-      # STEP 3: Verificar recursos do runner
-      # ================================================================
-      - name: Check runner resources
-        run: |
-          set -euo pipefail
-          echo "=== Disco ==="
-          df -h .
-          echo "=== RAM ==="
-          free -h
-          echo "=== CPUs ==="
-          nproc
-
-          AVAIL_KB=$(df . | tail -1 | awk '{print $4}')
-          AVAIL_GB=$((AVAIL_KB / 1024 / 1024))
-          if [ "$AVAIL_GB" -lt 5 ]; then
-            echo "::error::DISCO INSUFICIENTE: ${AVAIL_GB}GB livre (minimo 5GB)"
-            exit 1
-          fi
-          echo "::notice::Disco disponivel: ${AVAIL_GB}GB"
-
-      # ================================================================
-      # STEP 4: Instalar dependencias
-      # ================================================================
-      # ================================================================
-      # STEP 3.5: Habilitar core dumps (evidencia de crash)
-      # ================================================================
-      - name: Enable core dumps
-        run: |
-          ulimit -c unlimited
-          sudo mkdir -p /tmp/coredumps
-          echo '/tmp/coredumps/core.%e.%p.%t' | sudo tee /proc/sys/kernel/core_pattern
-          # Desabilitar apport se presente (intercepta core dumps no Ubuntu)
-          sudo systemctl disable apport 2>/dev/null || true
-          sudo systemctl stop apport 2>/dev/null || true
-          echo "::notice::Core dumps habilitados em /tmp/coredumps/"
-
-      - name: Install build dependencies
-        run: |
-          set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ccache ninja-build python3 lsb-release pkg-config
-          ccache --max-size=8G
-          ccache --zero-stats
-          echo "::notice::ccache configurado (max 8GB)"
-
-      # ================================================================
-      # STEP 5: Cache depot_tools (evita re-download)
-      # ================================================================
-      - name: Cache depot_tools
-        uses: actions/cache@v5
+      # ==================================================================
+      # PHASE 1: PRE-VALIDATE
+      # ==================================================================
+      - name: "Phase 1: Pre-validate"
+        uses: ./.github/actions/pre-validate
         with:
-          path: depot_tools
-          key: depot-tools-v1
+          yaml_file: configs/v8-chrome.yaml
+          config: ${{ inputs.v8_config }}
 
-      - name: Setup depot_tools
-        run: |
-          set -euo pipefail
-          if [ ! -d depot_tools ] || [ ! -f depot_tools/gclient ]; then
-            echo "Clonando depot_tools..."
-            rm -rf depot_tools
-            git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git || {
-              echo "::error::FALHA ao clonar depot_tools! googlesource indisponivel?"
-              exit 1
-            }
-          fi
-          echo "$PWD/depot_tools" >> $GITHUB_PATH
-
-      # ================================================================
-      # STEP 6: Cache ccache (acelera rebuilds)
-      # ================================================================
-      - name: Cache ccache
-        uses: actions/cache@v5
+      # ==================================================================
+      # PHASE 2: SETUP V8
+      # ==================================================================
+      - name: "Phase 2: Setup V8"
+        uses: ./.github/actions/setup-v8
         with:
-          path: ~/.ccache
-          key: ccache-chrome-${{ inputs.v8_config }}-${{ steps.version.outputs.V8_VERSION }}
-          restore-keys: |
-            ccache-chrome-${{ inputs.v8_config }}-
-            ccache-chrome-
+          v8_version: ${{ steps.version.outputs.V8_VERSION }}
+          v8_branch: ${{ steps.version.outputs.V8_BRANCH }}
+          config: ${{ inputs.v8_config }}
 
-      # ================================================================
-      # STEP 7: Fetch V8 source (do googlesource, NAO do fork)
-      # ================================================================
-      # ================================================================
-      # Cache V8 source (repo publico = 10GB gratis)
-      # Economiza ~10min de 'fetch v8' + gclient sync
-      # ================================================================
-      - name: Cache V8 source tree
-        uses: actions/cache@v5
+      # ==================================================================
+      # PHASE 3: BUILD
+      # ==================================================================
+      - name: "Phase 3: Build d8"
+        id: build
+        uses: ./.github/actions/build-d8
         with:
-          path: v8-build
-          key: v8-source-${{ steps.version.outputs.V8_VERSION }}
-          restore-keys: |
-            v8-source-
+          config: ${{ inputs.v8_config }}
 
-      - name: Fetch V8 ${{ steps.version.outputs.V8_VERSION }}
-        run: |
-          set -euo pipefail
-          V8_VERSION="${{ steps.version.outputs.V8_VERSION }}"
-          V8_BRANCH="${{ steps.version.outputs.V8_BRANCH }}"
-
-          echo "::group::Fetching V8 ${V8_VERSION}..."
-
-          mkdir -p v8-build && cd v8-build
-
-          if [ ! -d v8 ]; then
-            fetch v8 || {
-              echo "::error::fetch v8 FALHOU!"
-              echo "::error::Rede indisponivel ou googlesource fora do ar."
-              exit 1
-            }
-          fi
-
-          cd v8
-          git fetch --tags origin || {
-            echo "::error::git fetch --tags FALHOU!"
-            exit 1
-          }
-          git fetch origin "${V8_BRANCH}" || {
-            echo "::error::git fetch ${V8_BRANCH} FALHOU!"
-            exit 1
-          }
-
-          # Checkout: tag exata ou branch (com aviso ALTO)
-          if git checkout "${V8_VERSION}" 2>/dev/null; then
-            echo "::notice::Checkout tag ${V8_VERSION} OK"
-          elif git checkout "tags/${V8_VERSION}" 2>/dev/null; then
-            echo "::notice::Checkout tags/${V8_VERSION} OK"
-          else
-            echo "::error::!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-            echo "::error::TAG EXATA ${V8_VERSION} NAO ENCONTRADA!"
-            echo "::error::Usando branch ${V8_BRANCH} como FALLBACK!"
-            echo "::error::PATCH LEVEL PODE DIFERIR DO CHROME STABLE!"
-            echo "::error::!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-            git checkout "${V8_BRANCH}" || {
-              echo "::error::Branch ${V8_BRANCH} TAMBEM FALHOU!"
-              exit 1
-            }
-          fi
-
-          echo "::endgroup::"
-
-          echo "::group::gclient sync..."
-          gclient sync --with_branch_heads --with_tags -D || {
-            echo "::error::gclient sync FALHOU!"
-            echo "::error::Dependencias podem estar faltando. Build PROVAVELMENTE vai falhar."
-            exit 1
-          }
-          echo "::endgroup::"
-
-      # ================================================================
-      # STEP 8: Gerar args.gn
-      # ================================================================
-      - name: Install PyYAML
-        run: pip3 install pyyaml
-
-      # ================================================================
-      # PRE-BUILD: Validacao completa do YAML (NADA hardcoded)
-      # ================================================================
-      - name: "[PRE] Validate config from YAML"
-        run: |
-          set -euo pipefail
-          python3 configs/verify-build.py pre configs/v8-chrome.yaml "${{ inputs.v8_config }}" || {
-            echo "::error::PRE-BUILD VALIDATION FAILED!"
-            echo "::error::O YAML configs/v8-chrome.yaml tem problemas no config '${{ inputs.v8_config }}'."
-            exit 1
-          }
-
-      - name: "[PRE] Generate args.gn from YAML"
-        run: |
-          set -euo pipefail
-          CONFIG="${{ inputs.v8_config }}"
-          OUT="v8-build/v8/out/d8-${CONFIG}"
-          mkdir -p "$OUT"
-          python3 configs/yaml2gn.py configs/v8-chrome.yaml "$CONFIG" > "$OUT/args.gn" || {
-            echo "::error::yaml2gn.py FALHOU!"
-            exit 1
-          }
-
-      - name: "[PRE] Verify args.gn matches YAML (flag-by-flag)"
-        run: |
-          set -euo pipefail
-          CONFIG="${{ inputs.v8_config }}"
-          python3 configs/verify-build.py verify-args configs/v8-chrome.yaml "$CONFIG" "v8-build/v8/out/d8-${CONFIG}/args.gn" || {
-            echo "::error::args.gn NAO CORRESPONDE ao YAML!"
-            echo "::error::Flags divergentes detectadas. Build abortado."
-            exit 1
-          }
-          echo "=== args.gn validado (matches YAML) ==="
-          cat "v8-build/v8/out/d8-${CONFIG}/args.gn"
-
-      - name: Build d8 (${{ inputs.v8_config }})
-        run: |
-          set -euo pipefail
-          CONFIG="${{ inputs.v8_config }}"
-
-          cd v8-build/v8
-          gn gen "out/d8-${CONFIG}" || {
-            echo "::error::gn gen FALHOU!"
-            echo "::error::Verifique o args.gn e as dependencias (gclient sync)."
-            exit 1
-          }
-
-          echo "::group::Compilando d8-${CONFIG}..."
-          autoninja -C "out/d8-${CONFIG}" d8 || {
-            echo "::endgroup::"
-            echo "::warning::Build falhou com parallelismo automatico. Tentando -j 2..."
-            autoninja -j 2 -C "out/d8-${CONFIG}" d8 || {
-              echo "::error::BUILD FALHOU mesmo com -j 2!"
-              echo "::error::Verifique os logs de erro acima."
-              exit 1
-            }
-          }
-          echo "::endgroup::"
-
-          echo "::notice::Build d8-${CONFIG} completo!"
-          echo "=== ccache stats ==="
-          ccache -s
-
-      # ================================================================
-      # STEP 10: Validar build (GRITA se falhar)
-      # ================================================================
-      # ================================================================
-      # POST-BUILD: Validacao do binario contra YAML (NADA hardcoded)
-      # ================================================================
-      - name: "[POST] Validate d8 against YAML config"
-        run: |
-          set -euo pipefail
-          CONFIG="${{ inputs.v8_config }}"
-          D8="./v8-build/v8/out/d8-${CONFIG}/d8"
-
-          python3 configs/verify-build.py post configs/v8-chrome.yaml "$CONFIG" "$D8" || {
-            echo "::error::POST-BUILD VALIDATION FAILED!"
-            echo "::error::O d8 compilado NAO corresponde ao que o YAML pediu."
-            exit 1
-          }
-
-      # ================================================================
-      # POST-BUILD: Introspeccao profunda (gn desc + nm + runtime probe)
-      # ================================================================
-      - name: "[POST] Introspect binary (gn desc + nm + runtime probe)"
-        run: |
-          set -euo pipefail
-          CONFIG="${{ inputs.v8_config }}"
-          D8="./v8-build/v8/out/d8-${CONFIG}/d8"
-          BUILD_DIR="v8-build/v8/out/d8-${CONFIG}"
-
-          python3 configs/verify-build.py introspect configs/v8-chrome.yaml "$CONFIG" "$D8" "$BUILD_DIR" || {
-            echo "::error::INTROSPECT FAILED! Binario NAO corresponde ao YAML."
-            echo "::error::Verifique o report em configs/reference/introspect-${CONFIG}.json"
-            exit 1
-          }
-
-      - name: "[POST] Upload introspection report"
-        if: always()
-        uses: actions/upload-artifact@v7
+      # ==================================================================
+      # PHASE 4: POST-VALIDATE
+      # ==================================================================
+      - name: "Phase 4: Post-validate"
+        if: always() && !cancelled()
+        uses: ./.github/actions/post-validate
         with:
-          name: introspect-${{ inputs.v8_config }}-${{ steps.version.outputs.V8_VERSION }}
-          path: configs/reference/introspect-*.json
-          retention-days: 90
-          if-no-files-found: ignore
-
-      - name: "[POST] Update build status in YAML"
-        if: always()
-        run: |
-          CONFIG="${{ inputs.v8_config }}"
-          D8="./v8-build/v8/out/d8-${CONFIG}/d8"
-          VERSION=$($D8 -e "print(version())" 2>&1 || echo "unknown")
-          SIZE=$(du -sh "$D8" 2>&1 | cut -f1 || echo "unknown")
-
-          if [ "${{ job.status }}" = "success" ]; then
-            python3 configs/verify-build.py update-status configs/v8-chrome.yaml "$CONFIG" "OK" "$VERSION" "$SIZE"
-          else
-            python3 configs/verify-build.py update-status configs/v8-chrome.yaml "$CONFIG" "FAIL" "$VERSION" "$SIZE"
-          fi
-
-          # Commit status update
-          git config user.name "condor-data-bot"
-          git config user.email "bot@condor-data.github.io"
-          git add configs/v8-chrome.yaml
-          git diff --cached --stat
-          git commit -m "Update build status: ${CONFIG} = ${{ job.status }} (V8 ${VERSION})" || true
-          git push || echo "::warning::Push failed (concurrent update?)"
-
-      # ================================================================
-      # STEP 11: Upload artifact
-      # ================================================================
-      - name: Upload d8 artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: d8-${{ inputs.v8_config }}-chrome-${{ steps.version.outputs.V8_VERSION }}
-          path: |
-            v8-build/v8/out/d8-${{ inputs.v8_config }}/d8
-            v8-build/v8/out/d8-${{ inputs.v8_config }}/*.so
-            v8-build/v8/out/d8-${{ inputs.v8_config }}/snapshot_blob.bin
-            v8-build/v8/out/d8-${{ inputs.v8_config }}/icudtl.dat
-          retention-days: 90
-          if-no-files-found: error
-          compression-level: 6
-
-      - name: Upload core dumps (se existirem)
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: coredumps-${{ inputs.v8_config }}-${{ steps.version.outputs.V8_VERSION }}
-          path: /tmp/coredumps/
-          retention-days: 30
-          if-no-files-found: ignore
+          yaml_file: configs/v8-chrome.yaml
+          config: ${{ inputs.v8_config }}
+          v8_version: ${{ steps.version.outputs.V8_VERSION }}
+          build_result: ${{ steps.build.outcome }}
