@@ -1,0 +1,425 @@
+###############################################################################
+# Build d8 com V8 Sandbox Memory Corruption API
+#
+# Runner: ubuntu-latest (4 vCPU, 16GB RAM, 14GB SSD) — GRATIS para public repos
+# Trigger: APENAS manual (workflow_dispatch) — ZERO triggers automaticos
+# Secrets: ZERO — compilacao V8 usa apenas codigo publico
+# Custo: $0
+#
+# Configs disponiveis:
+#   fast    — Release + dcheck + component build (iteracao rapida de PoC)
+#   fuzz    — Release + dcheck + static (fuzzing com crash filter)
+#   debug   — Full debug + verify_heap + full symbols (GDB/LLDB)
+#   release — Release puro sem dcheck (layout = producao)
+#
+# IMPORTANTE: ASAN NAO pode ser combinado com Memory Corruption API.
+#             O crash filter precisa interceptar SIGSEGV/SIGBUS diretamente.
+#             V8 BUILD.gn tem assert explicito bloqueando is_asan + memory_corruption_api.
+###############################################################################
+name: "Build d8 (V8 Sandbox Escape Lab)"
+
+on:
+  workflow_dispatch:
+    inputs:
+      v8_version:
+        description: "V8 version override (ex: 14.7.173.18). Vazio = auto-detect Chrome stable."
+        required: false
+        default: ""
+        type: string
+      v8_config:
+        description: "Build config"
+        required: true
+        default: "fast"
+        type: choice
+        options:
+          - fast
+          - fuzz
+          - debug
+          - release
+
+# ZERO triggers automaticos — sem push, sem PR, sem schedule
+# Apenas workflow_dispatch (manual)
+
+jobs:
+  build-d8:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180  # 3h max (V8 compila em ~25min, margem ampla)
+
+    steps:
+      # ================================================================
+      # STEP 1: Checkout (apenas para ter o workflow file)
+      # ================================================================
+      - name: Checkout workflows
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github
+          sparse-checkout-cone-mode: true
+
+      # ================================================================
+      # STEP 2: Auto-detect V8 version do Chrome stable
+      # ================================================================
+      - name: Detect V8 version
+        id: version
+        run: |
+          set -euo pipefail
+
+          if [ -n "${{ inputs.v8_version }}" ]; then
+            V8_VER="${{ inputs.v8_version }}"
+            echo "::notice::OVERRIDE MANUAL: V8 ${V8_VER}"
+          else
+            echo "::group::Auto-detecting Chrome stable V8 version..."
+
+            # 1. Pegar branch estavel do Chrome
+            STABLE_BRANCH=$(curl -sf --max-time 15 'https://chromiumdash.appspot.com/fetch_milestones' | \
+              python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          for m in data:
+              if m.get('schedule_phase') == 'stable' and m.get('schedule_active'):
+                  print(m['v8_branch'])
+                  break
+          ") || true
+
+            if [ -z "$STABLE_BRANCH" ]; then
+              echo "::error::FALHA ao detectar branch estavel do Chrome!"
+              echo "::error::chromiumdash.appspot.com pode estar fora do ar."
+              echo "::error::Use o input v8_version para especificar manualmente."
+              exit 1
+            fi
+            echo "Chrome stable V8 branch: ${STABLE_BRANCH}"
+
+            # 2. Pegar ultima tag patch dessa branch
+            V8_VER=$(git ls-remote --tags https://chromium.googlesource.com/v8/v8.git "${STABLE_BRANCH}.*" 2>/dev/null | \
+              awk '{print $2}' | sed 's|refs/tags/||' | sort -V | tail -1) || true
+
+            if [ -z "$V8_VER" ]; then
+              echo "::error::NENHUMA TAG encontrada para branch ${STABLE_BRANCH}!"
+              echo "::error::git ls-remote pode ter falhado ou a branch nao tem tags."
+              echo "::error::Use o input v8_version para especificar manualmente."
+              exit 1
+            fi
+
+            echo "::endgroup::"
+            echo "::notice::Auto-detected: V8 ${V8_VER} (Chrome stable branch ${STABLE_BRANCH})"
+          fi
+
+          # Extrair major.minor para branch-heads
+          V8_BRANCH="branch-heads/$(echo $V8_VER | cut -d. -f1,2)"
+          echo "V8_VERSION=${V8_VER}" >> $GITHUB_OUTPUT
+          echo "V8_BRANCH=${V8_BRANCH}" >> $GITHUB_OUTPUT
+          echo "V8_CONFIG=${{ inputs.v8_config }}" >> $GITHUB_OUTPUT
+
+      # ================================================================
+      # STEP 3: Verificar recursos do runner
+      # ================================================================
+      - name: Check runner resources
+        run: |
+          set -euo pipefail
+          echo "=== Disco ==="
+          df -h .
+          echo "=== RAM ==="
+          free -h
+          echo "=== CPUs ==="
+          nproc
+
+          AVAIL_KB=$(df . | tail -1 | awk '{print $4}')
+          AVAIL_GB=$((AVAIL_KB / 1024 / 1024))
+          if [ "$AVAIL_GB" -lt 5 ]; then
+            echo "::error::DISCO INSUFICIENTE: ${AVAIL_GB}GB livre (minimo 5GB)"
+            exit 1
+          fi
+          echo "::notice::Disco disponivel: ${AVAIL_GB}GB"
+
+      # ================================================================
+      # STEP 4: Instalar dependencias
+      # ================================================================
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ccache ninja-build python3 lsb-release pkg-config
+          ccache --max-size=8G
+          ccache --zero-stats
+          echo "::notice::ccache configurado (max 8GB)"
+
+      # ================================================================
+      # STEP 5: Cache depot_tools (evita re-download)
+      # ================================================================
+      - name: Cache depot_tools
+        uses: actions/cache@v4
+        with:
+          path: depot_tools
+          key: depot-tools-v1
+
+      - name: Setup depot_tools
+        run: |
+          set -euo pipefail
+          if [ ! -d depot_tools ] || [ ! -f depot_tools/gclient ]; then
+            echo "Clonando depot_tools..."
+            rm -rf depot_tools
+            git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git || {
+              echo "::error::FALHA ao clonar depot_tools! googlesource indisponivel?"
+              exit 1
+            }
+          fi
+          echo "$PWD/depot_tools" >> $GITHUB_PATH
+
+      # ================================================================
+      # STEP 6: Cache ccache (acelera rebuilds)
+      # ================================================================
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-chrome-${{ inputs.v8_config }}-${{ steps.version.outputs.V8_VERSION }}
+          restore-keys: |
+            ccache-chrome-${{ inputs.v8_config }}-
+            ccache-chrome-
+
+      # ================================================================
+      # STEP 7: Fetch V8 source (do googlesource, NAO do fork)
+      # ================================================================
+      - name: Fetch V8 ${{ steps.version.outputs.V8_VERSION }}
+        run: |
+          set -euo pipefail
+          V8_VERSION="${{ steps.version.outputs.V8_VERSION }}"
+          V8_BRANCH="${{ steps.version.outputs.V8_BRANCH }}"
+
+          echo "::group::Fetching V8 ${V8_VERSION}..."
+
+          mkdir -p v8-build && cd v8-build
+
+          if [ ! -d v8 ]; then
+            fetch v8 || {
+              echo "::error::fetch v8 FALHOU!"
+              echo "::error::Rede indisponivel ou googlesource fora do ar."
+              exit 1
+            }
+          fi
+
+          cd v8
+          git fetch --tags origin || {
+            echo "::error::git fetch --tags FALHOU!"
+            exit 1
+          }
+          git fetch origin "${V8_BRANCH}" || {
+            echo "::error::git fetch ${V8_BRANCH} FALHOU!"
+            exit 1
+          }
+
+          # Checkout: tag exata ou branch (com aviso ALTO)
+          if git checkout "${V8_VERSION}" 2>/dev/null; then
+            echo "::notice::Checkout tag ${V8_VERSION} OK"
+          elif git checkout "tags/${V8_VERSION}" 2>/dev/null; then
+            echo "::notice::Checkout tags/${V8_VERSION} OK"
+          else
+            echo "::error::!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+            echo "::error::TAG EXATA ${V8_VERSION} NAO ENCONTRADA!"
+            echo "::error::Usando branch ${V8_BRANCH} como FALLBACK!"
+            echo "::error::PATCH LEVEL PODE DIFERIR DO CHROME STABLE!"
+            echo "::error::!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+            git checkout "${V8_BRANCH}" || {
+              echo "::error::Branch ${V8_BRANCH} TAMBEM FALHOU!"
+              exit 1
+            }
+          fi
+
+          echo "::endgroup::"
+
+          echo "::group::gclient sync..."
+          gclient sync --with_branch_heads --with_tags -D || {
+            echo "::error::gclient sync FALHOU!"
+            echo "::error::Dependencias podem estar faltando. Build PROVAVELMENTE vai falhar."
+            exit 1
+          }
+          echo "::endgroup::"
+
+      # ================================================================
+      # STEP 8: Gerar args.gn
+      # ================================================================
+      - name: Generate args.gn (${{ inputs.v8_config }})
+        run: |
+          set -euo pipefail
+          CONFIG="${{ inputs.v8_config }}"
+          OUT="v8-build/v8/out/d8-${CONFIG}"
+          mkdir -p "$OUT"
+
+          # Base comum a TODOS os configs
+          cat > "$OUT/args.gn" << 'BASEEOF'
+          v8_enable_sandbox = true
+          v8_enable_memory_corruption_api = true
+          target_cpu = "x64"
+          is_asan = false
+          treat_warnings_as_errors = false
+          cc_wrapper = "env CCACHE_SLOPPINESS=time_macros ccache"
+          BASEEOF
+
+          # Config-specific
+          case "$CONFIG" in
+            fast)
+              cat >> "$OUT/args.gn" << 'EOF'
+          # d8-fast: iteracao rapida (component build, dcheck, symbols=1)
+          is_debug = false
+          dcheck_always_on = true
+          is_component_build = true
+          symbol_level = 1
+          v8_enable_backtrace = true
+          v8_enable_disassembler = true
+          v8_enable_object_print = true
+          EOF
+              ;;
+            fuzz)
+              cat >> "$OUT/args.gn" << 'EOF'
+          # d8-fuzz: fuzzing com crash filter (static, dcheck, symbols=0)
+          is_debug = false
+          dcheck_always_on = true
+          is_component_build = false
+          symbol_level = 0
+          EOF
+              ;;
+            debug)
+              cat >> "$OUT/args.gn" << 'EOF'
+          # d8-debug: full debug (GDB/LLDB, verify_heap, full symbols)
+          is_debug = true
+          v8_optimized_debug = false
+          v8_no_inline = true
+          dcheck_always_on = true
+          is_component_build = false
+          symbol_level = 2
+          v8_enable_backtrace = true
+          v8_enable_disassembler = true
+          v8_enable_object_print = true
+          v8_enable_verify_heap = true
+          EOF
+              ;;
+            release)
+              cat >> "$OUT/args.gn" << 'EOF'
+          # d8-release: layout proximo de producao (sem dcheck, sem symbols)
+          is_debug = false
+          dcheck_always_on = false
+          is_component_build = false
+          symbol_level = 0
+          EOF
+              ;;
+          esac
+
+          echo "=== Generated args.gn ==="
+          cat "$OUT/args.gn"
+
+      # ================================================================
+      # STEP 9: Compilar d8
+      # ================================================================
+      - name: Build d8 (${{ inputs.v8_config }})
+        run: |
+          set -euo pipefail
+          CONFIG="${{ inputs.v8_config }}"
+
+          cd v8-build/v8
+          gn gen "out/d8-${CONFIG}" || {
+            echo "::error::gn gen FALHOU!"
+            echo "::error::Verifique o args.gn e as dependencias (gclient sync)."
+            exit 1
+          }
+
+          echo "::group::Compilando d8-${CONFIG}..."
+          autoninja -C "out/d8-${CONFIG}" d8 || {
+            echo "::endgroup::"
+            echo "::warning::Build falhou com parallelismo automatico. Tentando -j 2..."
+            autoninja -j 2 -C "out/d8-${CONFIG}" d8 || {
+              echo "::error::BUILD FALHOU mesmo com -j 2!"
+              echo "::error::Verifique os logs de erro acima."
+              exit 1
+            }
+          }
+          echo "::endgroup::"
+
+          echo "::notice::Build d8-${CONFIG} completo!"
+          echo "=== ccache stats ==="
+          ccache -s
+
+      # ================================================================
+      # STEP 10: Validar build (GRITA se falhar)
+      # ================================================================
+      - name: Validate d8 build
+        run: |
+          set -euo pipefail
+          CONFIG="${{ inputs.v8_config }}"
+          D8="./v8-build/v8/out/d8-${CONFIG}/d8"
+
+          echo "=== [1/6] d8 executa JavaScript ==="
+          $D8 -e "print('hello from d8')" || {
+            echo "::error::d8 NAO EXECUTA! Binario corrompido ou shared libs faltando."
+            exit 1
+          }
+
+          echo "=== [2/6] V8 version ==="
+          $D8 -e "print('V8 version: ' + version())"
+
+          echo "=== [3/6] Sandbox API exposta ==="
+          STYPE=$($D8 --sandbox-testing -e "print(typeof Sandbox)" 2>&1 | tail -1)
+          if [ "$STYPE" != "object" ]; then
+            echo "::error::SANDBOX API NAO EXPOSTA!"
+            echo "::error::typeof Sandbox = '${STYPE}'"
+            echo "::error::v8_enable_memory_corruption_api=true pode nao ter funcionado!"
+            exit 1
+          fi
+          echo "Sandbox API: OK (typeof Sandbox = 'object')"
+
+          echo "=== [4/6] Sandbox.MemoryView ==="
+          $D8 --sandbox-testing -e "
+            let m = new DataView(new Sandbox.MemoryView(0, 0x100));
+            print('MemoryView: OK');
+            print('Sandbox.base: ' + Sandbox.base);
+            print('Sandbox.byteLength: ' + Sandbox.byteLength);
+          " || {
+            echo "::error::Sandbox.MemoryView FALHOU!"
+            exit 1
+          }
+
+          echo "=== [5/6] addrof + getSizeOf ==="
+          $D8 --sandbox-testing -e "
+            let obj = {a: 1, b: 2};
+            let addr = Sandbox.getAddressOf(obj);
+            let size = Sandbox.getSizeOf(obj);
+            print('addrof: 0x' + addr.toString(16));
+            print('sizeof: ' + size + ' bytes');
+            if (size <= 0) { throw new Error('getSizeOf retornou <= 0!'); }
+          " || {
+            echo "::error::addrof/getSizeOf FALHOU!"
+            exit 1
+          }
+
+          echo "=== [6/6] Natives syntax + GC ==="
+          $D8 --sandbox-testing --allow-natives-syntax --expose-gc -e "
+            gc();
+            let o = {x: 42};
+            %DebugPrint(o);
+            print('Natives+GC: OK');
+          " || {
+            echo "::error::--allow-natives-syntax ou --expose-gc FALHOU!"
+            exit 1
+          }
+
+          echo ""
+          echo "========================================="
+          echo "  TODOS OS 6 TESTES PASSARAM"
+          echo "  Config:  ${{ inputs.v8_config }}"
+          echo "  V8:      $($D8 -e 'print(version())')"
+          echo "  Binary:  $(du -sh $D8 | cut -f1)"
+          echo "========================================="
+
+      # ================================================================
+      # STEP 11: Upload artifact
+      # ================================================================
+      - name: Upload d8 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: d8-${{ inputs.v8_config }}-chrome-${{ steps.version.outputs.V8_VERSION }}
+          path: |
+            v8-build/v8/out/d8-${{ inputs.v8_config }}/d8
+            v8-build/v8/out/d8-${{ inputs.v8_config }}/*.so
+            v8-build/v8/out/d8-${{ inputs.v8_config }}/snapshot_blob.bin
+            v8-build/v8/out/d8-${{ inputs.v8_config }}/icudtl.dat
+          retention-days: 90
+          if-no-files-found: error
+          compression-level: 6
