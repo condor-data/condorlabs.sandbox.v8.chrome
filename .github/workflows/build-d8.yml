@@ -406,51 +406,17 @@ jobs:
           CONFIG="${{ inputs.v8_config }}"
           D8="./v8-build/v8/out/d8-${CONFIG}/d8"
 
-          echo "=== [1/6] d8 executa JavaScript ==="
+          echo "=== [1] d8 executa JavaScript ==="
           $D8 -e "print('hello from d8')" || {
             echo "::error::d8 NAO EXECUTA! Binario corrompido ou shared libs faltando."
             exit 1
           }
 
-          echo "=== [2/6] V8 version ==="
+          echo "=== [2] V8 version ==="
           $D8 -e "print('V8 version: ' + version())"
 
-          echo "=== [3/6] Sandbox API exposta ==="
-          STYPE=$($D8 --sandbox-testing -e "print(typeof Sandbox)" 2>&1 | tail -1)
-          if [ "$STYPE" != "object" ]; then
-            echo "::error::SANDBOX API NAO EXPOSTA!"
-            echo "::error::typeof Sandbox = '${STYPE}'"
-            echo "::error::v8_enable_memory_corruption_api=true pode nao ter funcionado!"
-            exit 1
-          fi
-          echo "Sandbox API: OK (typeof Sandbox = 'object')"
-
-          echo "=== [4/6] Sandbox.MemoryView ==="
-          $D8 --sandbox-testing -e "
-            let m = new DataView(new Sandbox.MemoryView(0, 0x100));
-            print('MemoryView: OK');
-            print('Sandbox.base: ' + Sandbox.base);
-            print('Sandbox.byteLength: ' + Sandbox.byteLength);
-          " || {
-            echo "::error::Sandbox.MemoryView FALHOU!"
-            exit 1
-          }
-
-          echo "=== [5/6] addrof + getSizeOf ==="
-          $D8 --sandbox-testing -e "
-            let obj = {a: 1, b: 2};
-            let addr = Sandbox.getAddressOf(obj);
-            let size = Sandbox.getSizeOf(obj);
-            print('addrof: 0x' + addr.toString(16));
-            print('sizeof: ' + size + ' bytes');
-            if (size <= 0) { throw new Error('getSizeOf retornou <= 0!'); }
-          " || {
-            echo "::error::addrof/getSizeOf FALHOU!"
-            exit 1
-          }
-
-          echo "=== [6/6] Natives syntax + GC ==="
-          $D8 --sandbox-testing --allow-natives-syntax --expose-gc -e "
+          echo "=== [3] Natives syntax + GC ==="
+          $D8 --allow-natives-syntax --expose-gc -e "
             gc();
             let o = {x: 42};
             %DebugPrint(o);
@@ -460,13 +426,73 @@ jobs:
             exit 1
           }
 
-          echo ""
-          echo "========================================="
-          echo "  TODOS OS 6 TESTES PASSARAM"
-          echo "  Config:  ${{ inputs.v8_config }}"
-          echo "  V8:      $($D8 -e 'print(version())')"
-          echo "  Binary:  $(du -sh $D8 | cut -f1)"
-          echo "========================================="
+          # Bifurcar validacao: sanitizer vs sandbox escape
+          case "$CONFIG" in
+            asan|tsan|ubsan)
+              echo "=== [4] SANITIZER: Confirmar Sandbox API AUSENTE ==="
+              STYPE=$($D8 --sandbox-testing -e "print(typeof Sandbox)" 2>&1 | tail -1) || true
+              if [ "$STYPE" = "object" ]; then
+                echo "::error::BUG DE CONFIG: Sandbox API EXPOSTA em build sanitizer!"
+                echo "::error::memory_corruption_api deveria ser false!"
+                exit 1
+              fi
+              echo "Sandbox API ausente: CORRETO para sanitizer build"
+
+              echo "=== [5] SANITIZER: d8 executa sem crash ==="
+              $D8 -e "
+                let arr = new Array(1000);
+                for (let i = 0; i < 1000; i++) arr[i] = {x: i};
+                print('Sanitizer stress test: OK');
+              " || {
+                echo "::error::Sanitizer detectou problema na execucao basica!"
+                exit 1
+              }
+
+              echo ""
+              echo "========================================="
+              echo "  SANITIZER BUILD VALIDADO"
+              echo "  Config:  ${CONFIG}"
+              echo "  V8:      $($D8 -e 'print(version())')"
+              echo "  Binary:  $(du -sh $D8 | cut -f1)"
+              echo "  NOTA:    Sandbox API NAO disponivel (correto)"
+              echo "========================================="
+              ;;
+            *)
+              echo "=== [4] Sandbox API exposta ==="
+              STYPE=$($D8 --sandbox-testing -e "print(typeof Sandbox)" 2>&1 | tail -1)
+              if [ "$STYPE" != "object" ]; then
+                echo "::error::SANDBOX API NAO EXPOSTA!"
+                echo "::error::typeof Sandbox = '${STYPE}'"
+                echo "::error::v8_enable_memory_corruption_api=true pode nao ter funcionado!"
+                exit 1
+              fi
+              echo "Sandbox API: OK"
+
+              echo "=== [5] Sandbox.MemoryView + addrof + getSizeOf ==="
+              $D8 --sandbox-testing -e "
+                let m = new DataView(new Sandbox.MemoryView(0, 0x100));
+                print('MemoryView: OK');
+                print('Sandbox.base: ' + Sandbox.base);
+                let obj = {a: 1};
+                let addr = Sandbox.getAddressOf(obj);
+                let size = Sandbox.getSizeOf(obj);
+                print('addrof: 0x' + addr.toString(16));
+                print('sizeof: ' + size + ' bytes');
+                if (size <= 0) throw new Error('getSizeOf <= 0!');
+              " || {
+                echo "::error::Sandbox API FALHOU!"
+                exit 1
+              }
+
+              echo ""
+              echo "========================================="
+              echo "  SANDBOX ESCAPE BUILD VALIDADO"
+              echo "  Config:  ${CONFIG}"
+              echo "  V8:      $($D8 -e 'print(version())')"
+              echo "  Binary:  $(du -sh $D8 | cut -f1)"
+              echo "========================================="
+              ;;
+          esac
 
       # ================================================================
       # STEP 11: Upload artifact
@@ -492,12 +518,4 @@ jobs:
           path: /tmp/coredumps/
           retention-days: 30
           if-no-files-found: ignore
-
-      - name: Upload core dumps (se existirem)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: coredumps-${{ inputs.v8_config }}-${{ steps.version.outputs.V8_VERSION }}
-          path: /tmp/coredumps/
-          retention-days: 30
           if-no-files-found: ignore
