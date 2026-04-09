@@ -86,7 +86,7 @@ jobs:
               if m.get('schedule_phase') == 'stable' and m.get('schedule_active'):
                   print(m['v8_branch'])
                   break
-          ") || true
+          ") || { echo "::error::FALHA ao detectar V8 branch do Chrome! API indisponivel."; exit 1; }
 
             if [ -z "$STABLE_BRANCH" ]; then
               echo "::error::FALHA ao detectar branch estavel do Chrome!"
@@ -98,7 +98,7 @@ jobs:
 
             # 2. Pegar ultima tag patch dessa branch
             V8_VER=$(git ls-remote --tags https://chromium.googlesource.com/v8/v8.git "${STABLE_BRANCH}.*" 2>/dev/null | \
-              awk '{print $2}' | sed 's|refs/tags/||' | sort -V | tail -1) || true
+              awk '{print $2}' | sed 's|refs/tags/||' | sort -V | tail -1) || { echo "::error::git ls-remote FALHOU!"; exit 1; }
 
             if [ -z "$V8_VER" ]; then
               echo "::error::NENHUMA TAG encontrada para branch ${STABLE_BRANCH}!"
