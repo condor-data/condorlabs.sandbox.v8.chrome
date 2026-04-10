@@ -57,23 +57,52 @@ jobs:
             V8_VER="${{ inputs.v8_version }}"
             echo "::notice::OVERRIDE MANUAL: V8 ${V8_VER}"
           else
-            STABLE_BRANCH=$(curl -sf --max-time 15 'https://chromiumdash.appspot.com/fetch_milestones' | \
-              python3 -c "
+            # Auto-detect da versão V8 do Chrome stable
+            # Se a API falhar, o build MORRE. Sem retry, sem fallback.
+            # O humano deve re-disparar ou usar o input v8_version manualmente.
+            RESPONSE=$(curl -s --max-time 30 'https://chromiumdash.appspot.com/fetch_milestones')
+            if [ -z "$RESPONSE" ]; then
+              echo "::error::!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+              echo "::error::chromiumdash.appspot.com retornou RESPOSTA VAZIA!"
+              echo "::error::A API pode estar fora do ar."
+              echo "::error::"
+              echo "::error::SOLUCAO: re-dispare o build com v8_version preenchido:"
+              echo "::error::  gh workflow run build-d8.yml -f v8_config=fast -f v8_version=14.7.173.18"
+              echo "::error::!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+              exit 1
+            fi
+
+            STABLE_BRANCH=$(echo "$RESPONSE" | python3 -c "
           import json, sys
           data = json.load(sys.stdin)
           for m in data:
               if m.get('schedule_phase') == 'stable' and m.get('schedule_active'):
                   print(m['v8_branch'])
                   break
-          ") || { echo "::error::FALHA ao detectar V8 branch!"; exit 1; }
+          ") || {
+              echo "::error::!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+              echo "::error::JSON parse FALHOU na resposta do chromiumdash!"
+              echo "::error::Resposta recebida (primeiros 200 chars):"
+              echo "::error::$(echo "$RESPONSE" | head -c 200)"
+              echo "::error::"
+              echo "::error::SOLUCAO: use v8_version manualmente."
+              echo "::error::!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+              exit 1
+            }
 
-            [ -z "$STABLE_BRANCH" ] && { echo "::error::Branch vazio!"; exit 1; }
+            if [ -z "$STABLE_BRANCH" ]; then
+              echo "::error::Branch estavel vazio! A API retornou dados mas nenhum milestone stable."
+              exit 1
+            fi
 
             V8_VER=$(git ls-remote --tags https://chromium.googlesource.com/v8/v8.git "${STABLE_BRANCH}.*" | \
-              awk '{print $2}' | sed 's|refs/tags/||' | sort -V | tail -1) || \
-              { echo "::error::git ls-remote FALHOU!"; exit 1; }
+              awk '{print $2}' | sed 's|refs/tags/||' | sort -V | tail -1)
 
-            [ -z "$V8_VER" ] && { echo "::error::Nenhuma tag para ${STABLE_BRANCH}!"; exit 1; }
+            if [ -z "$V8_VER" ]; then
+              echo "::error::Nenhuma tag encontrada para branch ${STABLE_BRANCH} no googlesource!"
+              echo "::error::SOLUCAO: use v8_version manualmente."
+              exit 1
+            fi
             echo "::notice::Auto-detected: V8 ${V8_VER}"
           fi
 
