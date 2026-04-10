@@ -65,12 +65,16 @@ configs:
     # IC + JIT stress
     - --stress-ic
     - --stress-maglev
+    - --maglev-future
+    - --maglev-assert-types
+    - --verify-simplified-lowering
     - --stress-concurrent-inlining
     - --deopt-every-n-times=100
     - --stress-inline
     - --stress-lazy-compilation=5
     - --stress-background-compile
     # GC stress (heap corruption surface)
+    - --stress-compaction
     - --stress-compaction-random
     - --stress-incremental-marking
     - --stress-marking=50
@@ -170,6 +174,7 @@ configs:
     - --stress-maglev
     - --deopt-every-n-times=100
     # GC stress (UAF/heap-OOB surface)
+    - --stress-compaction
     - --stress-compaction-random
     - --stress-incremental-marking
     - --stress-marking=50
@@ -212,7 +217,9 @@ configs:
     - --jit-fuzzing
     # GC stress (concurrent GC/mutator overlap)
     - --stress-compaction
+    - --stress-compaction-random
     - --stress-incremental-marking
+    - --stress-flush-code
     - --stress-scavenge
     - --gc-interval=100
     last_build_status: null
@@ -331,6 +338,7 @@ configs:
     - --stress-gc-during-compilation
     - --stress-flush-code
     - --stress-compaction
+    - --stress-concurrent-allocation
     - --gc-interval=100
     last_build_status: null
     last_build_version: null
