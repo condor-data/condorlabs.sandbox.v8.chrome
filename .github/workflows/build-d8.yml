@@ -152,11 +152,15 @@ jobs:
           config: ${{ matrix.config }}
 
       # PHASE 3: BUILD
+      # NOTA: args.gn é gerado AQUI (dentro do build-d8), NÃO no pre-validate.
+      # O setup-v8 faz rm -rf v8 em clone fresh, destruindo qualquer args.gn
+      # criado antes dele. Por isso o build-d8 recebe yaml_file e regenera.
       - name: "Phase 3: Build d8"
         id: build
         uses: ./.github/actions/build-d8
         with:
           config: ${{ matrix.config }}
+          yaml_file: configs/v8-chrome.yaml
 
       # PHASE 4: POST-VALIDATE
       - name: "Phase 4: Post-validate"
