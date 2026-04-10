@@ -1,14 +1,17 @@
 ###############################################################################
 # Build d8 — V8 Sandbox Escape Lab
 #
-# Pipeline: 4 fases (composite actions no mesmo runner)
-#   Phase 1: pre-validate   — YAML validate + args.gn gen + verify (~30s)
-#   Phase 2: setup-v8       — deps + cache + fetch V8 (~10min)
-#   Phase 3: build-d8       — gn gen + autoninja (~15min)
-#   Phase 4: post-validate  — test + introspect + artifacts + status (~60s)
+# Matrix strategy: builda multiplos configs EM PARALELO.
+# Cada config roda no seu proprio runner (gratuito para public repos).
 #
-# Tudo lido do YAML. Nada hardcoded. YAML eh a unica fonte de verdade.
-# Trigger: APENAS manual. Secrets: ZERO. Custo: $0.
+# Exemplos de dispatch:
+#   1 config:   gh workflow run build-d8.yml -f configs='["fast"]'
+#   4 paralelo: gh workflow run build-d8.yml -f configs='["fast","fuzz","asan","tsan"]'
+#   com arm64:  gh workflow run build-d8.yml -f configs='["fast"]' -f platforms='["x64","arm64"]'
+#   tudo:       gh workflow run build-d8.yml -f configs='["fast","fuzz","asan","tsan"]' -f platforms='["x64","arm64"]'
+#
+# Pipeline por config: pre-validate → setup-v8 → build → post-validate
+# Tudo YAML-driven. Nada hardcoded. ZERO secrets. ZERO custo.
 ###############################################################################
 name: "Build d8 (V8 Sandbox Escape Lab)"
 
@@ -16,36 +19,37 @@ on:
   workflow_dispatch:
     inputs:
       v8_version:
-        description: "V8 version override (ex: 14.7.173.18). Vazio = auto-detect Chrome stable."
+        description: "V8 version (ex: 14.7.173.18). Vazio = auto-detect."
         required: false
         default: ""
         type: string
-      v8_config:
-        description: "Build config (do configs/v8-chrome.yaml)"
+      configs:
+        description: 'Configs JSON array (ex: ["fast"] ou ["fast","fuzz","asan","tsan"])'
         required: true
-        default: "fast"
-        type: choice
-        options:
-          - fast
-          - fuzz
-          - debug
-          - release
-          - asan
-          - tsan
-          - ubsan
+        default: '["fast"]'
+        type: string
+      platforms:
+        description: 'Platforms JSON array (ex: ["x64"] ou ["x64","arm64"])'
+        required: false
+        default: '["x64"]'
+        type: string
 
 permissions:
-  contents: write  # necessario para git push do status update
+  contents: write
 
+# ==============================================================================
+# JOB 1: Detect version + build matrix
+# ==============================================================================
 jobs:
-  pipeline:
+  prepare:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 5
+    outputs:
+      v8_version: ${{ steps.version.outputs.V8_VERSION }}
+      v8_branch: ${{ steps.version.outputs.V8_BRANCH }}
+      matrix: ${{ steps.matrix.outputs.MATRIX }}
 
     steps:
-      # ==================================================================
-      # CHECKOUT + VERSION DETECT
-      # ==================================================================
       - name: Checkout
         uses: actions/checkout@v6
 
@@ -57,17 +61,12 @@ jobs:
             V8_VER="${{ inputs.v8_version }}"
             echo "::notice::OVERRIDE MANUAL: V8 ${V8_VER}"
           else
-            # Auto-detect da versão V8 do Chrome stable
-            # Se a API falhar, o build MORRE. Sem retry, sem fallback.
-            # O humano deve re-disparar ou usar o input v8_version manualmente.
             RESPONSE=$(curl -s --max-time 30 'https://chromiumdash.appspot.com/fetch_milestones')
             if [ -z "$RESPONSE" ]; then
               echo "::error::!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
               echo "::error::chromiumdash.appspot.com retornou RESPOSTA VAZIA!"
-              echo "::error::A API pode estar fora do ar."
-              echo "::error::"
-              echo "::error::SOLUCAO: re-dispare o build com v8_version preenchido:"
-              echo "::error::  gh workflow run build-d8.yml -f v8_config=fast -f v8_version=14.7.173.18"
+              echo "::error::SOLUCAO: re-dispare com v8_version preenchido:"
+              echo "::error::  gh workflow run build-d8.yml -f configs='[\"fast\"]' -f v8_version=14.7.173.18"
               echo "::error::!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
               exit 1
             fi
@@ -80,29 +79,16 @@ jobs:
                   print(m['v8_branch'])
                   break
           ") || {
-              echo "::error::!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-              echo "::error::JSON parse FALHOU na resposta do chromiumdash!"
-              echo "::error::Resposta recebida (primeiros 200 chars):"
-              echo "::error::$(echo "$RESPONSE" | head -c 200)"
-              echo "::error::"
-              echo "::error::SOLUCAO: use v8_version manualmente."
-              echo "::error::!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+              echo "::error::JSON parse FALHOU! Resposta: $(echo "$RESPONSE" | head -c 200)"
               exit 1
             }
 
-            if [ -z "$STABLE_BRANCH" ]; then
-              echo "::error::Branch estavel vazio! A API retornou dados mas nenhum milestone stable."
-              exit 1
-            fi
+            [ -z "$STABLE_BRANCH" ] && { echo "::error::Branch estavel vazio!"; exit 1; }
 
             V8_VER=$(git ls-remote --tags https://chromium.googlesource.com/v8/v8.git "${STABLE_BRANCH}.*" | \
               awk '{print $2}' | sed 's|refs/tags/||' | sort -V | tail -1)
 
-            if [ -z "$V8_VER" ]; then
-              echo "::error::Nenhuma tag encontrada para branch ${STABLE_BRANCH} no googlesource!"
-              echo "::error::SOLUCAO: use v8_version manualmente."
-              exit 1
-            fi
+            [ -z "$V8_VER" ] && { echo "::error::Nenhuma tag para ${STABLE_BRANCH}!"; exit 1; }
             echo "::notice::Auto-detected: V8 ${V8_VER}"
           fi
 
@@ -110,42 +96,91 @@ jobs:
           echo "V8_VERSION=${V8_VER}" >> $GITHUB_OUTPUT
           echo "V8_BRANCH=${V8_BRANCH}" >> $GITHUB_OUTPUT
 
-      # ==================================================================
+      - name: Build matrix
+        id: matrix
+        run: |
+          set -euo pipefail
+          pip3 -q install pyyaml
+
+          python3 << 'PYEOF'
+          import json, os, yaml
+
+          configs = json.loads('${{ inputs.configs }}')
+          platforms = json.loads('${{ inputs.platforms }}')
+
+          # Validar que cada config existe no YAML
+          with open('configs/v8-chrome.yaml') as f:
+              cfg = yaml.safe_load(f)
+          available = set(cfg.get('configs', {}).keys())
+
+          for c in configs:
+              if c not in available:
+                  print(f"::error::Config '{c}' NAO EXISTE no YAML! Disponiveis: {sorted(available)}")
+                  raise SystemExit(1)
+
+          # Gerar matrix
+          include = []
+          for c in configs:
+              for p in platforms:
+                  runner = "ubuntu-24.04-arm" if p == "arm64" else "ubuntu-latest"
+                  include.append({
+                      "config": c,
+                      "platform": p,
+                      "runner": runner,
+                  })
+
+          matrix = {"include": include}
+          print(f"::notice::Matrix: {len(include)} jobs ({configs} x {platforms})")
+          for item in include:
+              print(f"  - {item['config']} / {item['platform']} -> {item['runner']}")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"MATRIX={json.dumps(matrix)}\n")
+          PYEOF
+
+  # ==============================================================================
+  # JOB 2: Build (paralelo, 1 runner por config x platform)
+  # ==============================================================================
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false  # um config falhando NAO cancela os outros
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
       # PHASE 1: PRE-VALIDATE
-      # ==================================================================
-      - name: "Phase 1: Pre-validate"
+      - name: "Phase 1: Pre-validate (${{ matrix.config }}/${{ matrix.platform }})"
         uses: ./.github/actions/pre-validate
         with:
           yaml_file: configs/v8-chrome.yaml
-          config: ${{ inputs.v8_config }}
+          config: ${{ matrix.config }}
 
-      # ==================================================================
       # PHASE 2: SETUP V8
-      # ==================================================================
       - name: "Phase 2: Setup V8"
         uses: ./.github/actions/setup-v8
         with:
-          v8_version: ${{ steps.version.outputs.V8_VERSION }}
-          v8_branch: ${{ steps.version.outputs.V8_BRANCH }}
-          config: ${{ inputs.v8_config }}
+          v8_version: ${{ needs.prepare.outputs.v8_version }}
+          v8_branch: ${{ needs.prepare.outputs.v8_branch }}
+          config: ${{ matrix.config }}
 
-      # ==================================================================
       # PHASE 3: BUILD
-      # ==================================================================
       - name: "Phase 3: Build d8"
         id: build
         uses: ./.github/actions/build-d8
         with:
-          config: ${{ inputs.v8_config }}
+          config: ${{ matrix.config }}
 
-      # ==================================================================
       # PHASE 4: POST-VALIDATE
-      # ==================================================================
       - name: "Phase 4: Post-validate"
         if: always() && !cancelled()
         uses: ./.github/actions/post-validate
         with:
           yaml_file: configs/v8-chrome.yaml
-          config: ${{ inputs.v8_config }}
-          v8_version: ${{ steps.version.outputs.V8_VERSION }}
+          config: ${{ matrix.config }}
+          v8_version: ${{ needs.prepare.outputs.v8_version }}
           build_result: ${{ steps.build.outcome }}
