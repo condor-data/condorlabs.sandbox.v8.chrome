@@ -1,0 +1,69 @@
+# manifest.yaml — Define o que é obrigatório no projeto
+#
+# O smoke test lê ESTE arquivo para saber o que validar.
+# Se adicionar um config novo, adicione aqui também.
+# Se remover, remova daqui.
+#
+# NADA hardcoded nos workflows — tudo vem deste arquivo.
+
+# Configs obrigatórios (devem existir em v8-chrome.yaml e v8-cf.yaml)
+required_configs:
+  - fast
+  - fuzz
+  - debug
+  - release
+  - asan
+  - tsan
+  - ubsan
+  - wasm-stress
+  - jit-stress
+
+# Families válidas
+valid_families:
+  - sandbox
+  - sanitizer
+  - workerd
+
+# Campos obrigatórios em cada config
+required_fields:
+  - family
+  - description
+
+# Campos obrigatórios para configs sandbox/sanitizer (não workerd)
+required_fields_gn:
+  - gn_args
+  - runtime_flags
+
+# Scripts que devem existir
+required_scripts:
+  - configs/yaml2gn.py
+  - configs/verify-build.py
+  - configs/runtime-probe.js
+
+# Harness que devem existir e ser executáveis
+required_harness:
+  - configs/harness/fuzz-loop.sh
+  - configs/harness/fuzz-mutate.sh
+  - configs/harness/mutate-poc.py
+
+# Referências que devem existir
+required_references:
+  - configs/reference/v8-runtime-flags-d8-help.txt
+  - configs/reference/v8-all-flags-complete.txt
+
+# Composite actions que devem existir
+required_actions:
+  - .github/actions/pre-validate/action.yml
+  - .github/actions/setup-v8/action.yml
+  - .github/actions/build-d8/action.yml
+  - .github/actions/post-validate/action.yml
+
+# PoCs que devem existir (mínimo bytes)
+required_pocs:
+  min_size_bytes: 100
+  files:
+    - configs/pocs/poc-jspi-stack.js
+    - configs/pocs/poc-typedarray-bounds.js
+    - configs/pocs/poc-maglev-typeconfusion.js
+    - configs/pocs/poc-irregexp-bytecode.js
+    - configs/pocs/poc-wasm-table.js
