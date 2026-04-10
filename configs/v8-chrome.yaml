@@ -29,7 +29,9 @@ configs:
     - --sandbox-testing
     - --allow-natives-syntax
     - --expose-gc
-    - --expose-memory-corruption-api
+    - --stress-ic
+    - --hole-fuzzing
+    - --deopt-every-n-times=100
     - --verify-bytecode-full
     last_build_status: OK
     last_build_version: 14.7.173.18
@@ -58,15 +60,29 @@ configs:
     - --allow-natives-syntax
     - --expose-gc
     - --hole-fuzzing
-    - --stress-wasm-stack-switching
-    - --stress-wasm-memory-moving
-    - --stress-scavenge
-    - --stress-compaction
     - --jit-fuzzing
+    - --verify-bytecode-full
+    # IC + JIT stress
+    - --stress-ic
     - --stress-maglev
+    - --stress-concurrent-inlining
+    - --deopt-every-n-times=100
+    - --stress-inline
+    - --stress-lazy-compilation=5
+    - --stress-background-compile
+    # GC stress (heap corruption surface)
+    - --stress-compaction-random
+    - --stress-incremental-marking
+    - --stress-marking=50
+    - --stress-scavenge
+    - --stress-concurrent-allocation
+    - --stress-flush-code
     - --stress-gc-during-compilation
     - --gc-interval=100
-    - --verify-bytecode-full
+    - --fuzzer-gc-analysis
+    # WASM stress
+    - --stress-wasm-stack-switching
+    - --stress-wasm-memory-moving
     last_build_status: null
     last_build_version: null
     last_build_date: null
@@ -91,6 +107,12 @@ configs:
     - --sandbox-testing
     - --allow-natives-syntax
     - --expose-gc
+    # Verification (root cause analysis)
+    - --verify-heap
+    - --verify-bytecode-full
+    - --verify-write-barriers
+    - --verify-simplified-lowering
+    # Trace (debugging crashes)
     - --trace-turbo
     - --print-opt-code
     - --print-bytecode
@@ -99,8 +121,8 @@ configs:
     - --trace-deopt-verbose
     - --print-ast
     - --trace-wasm-stack-switching
-    - --verify-heap
-    - --verify-bytecode-full
+    - --trace-elements-transitions
+    - --trace-migration
     last_build_status: null
     last_build_version: null
     last_build_date: null
@@ -119,6 +141,8 @@ configs:
       v8_monolithic: true
     runtime_flags:
     - --sandbox-fuzzing
+    - --allow-natives-syntax
+    - --expose-gc
     last_build_status: null
     last_build_version: null
     last_build_date: null
@@ -138,8 +162,20 @@ configs:
     runtime_flags:
     - --allow-natives-syntax
     - --expose-gc
-    - --stress-compaction
+    - --verify-heap
+    - --verify-write-barriers
+    - --verify-bytecode-full
+    # IC + JIT stress (trigger bugs ASAN catches)
+    - --stress-ic
+    - --stress-maglev
+    - --deopt-every-n-times=100
+    # GC stress (UAF/heap-OOB surface)
+    - --stress-compaction-random
+    - --stress-incremental-marking
+    - --stress-marking=50
     - --stress-scavenge
+    - --stress-concurrent-allocation
+    - --stress-flush-code
     - --gc-interval=50
     last_build_status: null
     last_build_version: null
@@ -162,9 +198,23 @@ configs:
     runtime_flags:
     - --allow-natives-syntax
     - --expose-gc
-    - --stress-concurrent-inlining
-    - --stress-gc-during-compilation
     - --single-threaded-gc=false
+    - --concurrent-marking
+    # Concurrency stress (THE purpose of TSAN)
+    - --stress-concurrent-allocation
+    - --stress-concurrent-inlining
+    - --stress-concurrent-inlining-attach-code
+    - --stress-background-compile
+    - --stress-gc-during-compilation
+    # IC + JIT stress (type races)
+    - --stress-ic
+    - --stress-maglev
+    - --jit-fuzzing
+    # GC stress (concurrent GC/mutator overlap)
+    - --stress-compaction
+    - --stress-incremental-marking
+    - --stress-scavenge
+    - --gc-interval=100
     last_build_status: null
     last_build_version: null
     last_build_date: null
@@ -187,6 +237,20 @@ configs:
     runtime_flags:
     - --allow-natives-syntax
     - --expose-gc
+    - --verify-bytecode-full
+    # IC + JIT stress (trigger UB in type transitions)
+    - --stress-ic
+    - --stress-maglev
+    - --jit-fuzzing
+    - --stress-inline
+    - --stress-concurrent-inlining
+    - --deopt-every-n-times=100
+    - --hole-fuzzing
+    # GC stress (trigger UB in object movement)
+    - --stress-compaction
+    - --stress-scavenge
+    - --stress-gc-during-compilation
+    - --gc-interval=100
     last_build_status: null
     last_build_version: null
     last_build_date: null
@@ -206,14 +270,24 @@ configs:
     - --sandbox-fuzzing
     - --allow-natives-syntax
     - --expose-gc
+    - --hole-fuzzing
+    - --jit-fuzzing
+    - --verify-bytecode-full
+    # WASM core
     - --experimental-wasm-wasmfx
     - --experimental-wasm-growable-stacks
+    - --wasm-staging
+    - --wasm-deopt
+    - --wasm-lazy-validation
+    # WASM stress
     - --stress-wasm-stack-switching
     - --stress-wasm-memory-moving
     - --stress-wasm-code-gc
-    - --wasm-deopt
-    - --jit-fuzzing
-    - --hole-fuzzing
+    # GC stress (WASM heap interaction)
+    - --stress-compaction
+    - --stress-incremental-marking
+    - --stress-scavenge
+    - --gc-interval=100
     last_build_status: null
     last_build_version: null
     last_build_date: null
@@ -234,13 +308,30 @@ configs:
     - --sandbox-fuzzing
     - --allow-natives-syntax
     - --expose-gc
+    - --hole-fuzzing
+    - --verify-bytecode-full
+    # IC stress (THE #1 type confusion trigger)
+    - --stress-ic
+    # Maglev/Turbolev
     - --stress-maglev
+    - --maglev-future
+    - --maglev-assert-types
+    - --turbolev
+    - --turbolev-future
+    - --verify-simplified-lowering
+    # JIT tiering stress
     - --jit-fuzzing
     - --stress-concurrent-inlining
     - --stress-concurrent-inlining-attach-code
-    - --turbolev
-    - --hole-fuzzing
+    - --stress-inline
+    - --deopt-every-n-times=100
+    - --stress-lazy-compilation=5
+    - --stress-background-compile
+    # GC stress (invalidate JIT assumptions)
     - --stress-gc-during-compilation
+    - --stress-flush-code
+    - --stress-compaction
+    - --gc-interval=100
     last_build_status: null
     last_build_version: null
     last_build_date: null
