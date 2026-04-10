@@ -1,0 +1,21 @@
+{
+  "config": "fast",
+  "family": "sandbox",
+  "sources": {
+    "gn_overrides": {
+      "error": ""
+    },
+    "gn_defines": {
+      "error": ""
+    },
+    "binary_sanitizers": {
+      "asan": false,
+      "tsan": false,
+      "ubsan": false
+    },
+    "runtime_probe": {
+      "error": "exit 1",
+      "stderr": "Sandbox testing mode is enabled. Only sandbox violations will be reported, all other crashes will be ignored.\nSandbox bounds: [0x355b00000000,0x365b00000000)\n"
+    }
+  }
+}
