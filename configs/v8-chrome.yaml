@@ -62,7 +62,6 @@ configs:
     - --hole-fuzzing
     - --jit-fuzzing
     - --verify-bytecode-full
-    # IC + JIT stress
     - --stress-ic
     - --stress-maglev
     - --maglev-future
@@ -73,7 +72,6 @@ configs:
     - --stress-inline
     - --stress-lazy-compilation=5
     - --stress-background-compile
-    # GC stress (heap corruption surface)
     - --stress-compaction
     - --stress-compaction-random
     - --stress-incremental-marking
@@ -84,7 +82,6 @@ configs:
     - --stress-gc-during-compilation
     - --gc-interval=100
     - --fuzzer-gc-analysis
-    # WASM stress
     - --stress-wasm-stack-switching
     - --stress-wasm-memory-moving
     last_build_status: null
@@ -111,12 +108,10 @@ configs:
     - --sandbox-testing
     - --allow-natives-syntax
     - --expose-gc
-    # Verification (root cause analysis)
     - --verify-heap
     - --verify-bytecode-full
     - --verify-write-barriers
     - --verify-simplified-lowering
-    # Trace (debugging crashes)
     - --trace-turbo
     - --print-opt-code
     - --print-bytecode
@@ -147,10 +142,10 @@ configs:
     - --sandbox-fuzzing
     - --allow-natives-syntax
     - --expose-gc
-    last_build_status: null
-    last_build_version: null
-    last_build_date: null
-    d8_binary_size: null
+    last_build_status: FAIL
+    last_build_version: ERROR:no-binary
+    last_build_date: '2026-04-10T16:03:32Z'
+    d8_binary_size: ERROR:no-binary
   asan:
     description: Address Sanitizer — UAF, buffer overflow, heap OOB
     family: sanitizer
@@ -169,11 +164,9 @@ configs:
     - --verify-heap
     - --verify-write-barriers
     - --verify-bytecode-full
-    # IC + JIT stress (trigger bugs ASAN catches)
     - --stress-ic
     - --stress-maglev
     - --deopt-every-n-times=100
-    # GC stress (UAF/heap-OOB surface)
     - --stress-compaction
     - --stress-compaction-random
     - --stress-incremental-marking
@@ -205,17 +198,14 @@ configs:
     - --expose-gc
     - --single-threaded-gc=false
     - --concurrent-marking
-    # Concurrency stress (THE purpose of TSAN)
     - --stress-concurrent-allocation
     - --stress-concurrent-inlining
     - --stress-concurrent-inlining-attach-code
     - --stress-background-compile
     - --stress-gc-during-compilation
-    # IC + JIT stress (type races)
     - --stress-ic
     - --stress-maglev
     - --jit-fuzzing
-    # GC stress (concurrent GC/mutator overlap)
     - --stress-compaction
     - --stress-compaction-random
     - --stress-incremental-marking
@@ -245,7 +235,6 @@ configs:
     - --allow-natives-syntax
     - --expose-gc
     - --verify-bytecode-full
-    # IC + JIT stress (trigger UB in type transitions)
     - --stress-ic
     - --stress-maglev
     - --jit-fuzzing
@@ -253,7 +242,6 @@ configs:
     - --stress-concurrent-inlining
     - --deopt-every-n-times=100
     - --hole-fuzzing
-    # GC stress (trigger UB in object movement)
     - --stress-compaction
     - --stress-scavenge
     - --stress-gc-during-compilation
@@ -280,17 +268,14 @@ configs:
     - --hole-fuzzing
     - --jit-fuzzing
     - --verify-bytecode-full
-    # WASM core
     - --experimental-wasm-wasmfx
     - --experimental-wasm-growable-stacks
     - --wasm-staging
     - --wasm-deopt
     - --wasm-lazy-validation
-    # WASM stress
     - --stress-wasm-stack-switching
     - --stress-wasm-memory-moving
     - --stress-wasm-code-gc
-    # GC stress (WASM heap interaction)
     - --stress-compaction
     - --stress-incremental-marking
     - --stress-scavenge
@@ -317,16 +302,13 @@ configs:
     - --expose-gc
     - --hole-fuzzing
     - --verify-bytecode-full
-    # IC stress (THE #1 type confusion trigger)
     - --stress-ic
-    # Maglev/Turbolev
     - --stress-maglev
     - --maglev-future
     - --maglev-assert-types
     - --turbolev
     - --turbolev-future
     - --verify-simplified-lowering
-    # JIT tiering stress
     - --jit-fuzzing
     - --stress-concurrent-inlining
     - --stress-concurrent-inlining-attach-code
@@ -334,7 +316,6 @@ configs:
     - --deopt-every-n-times=100
     - --stress-lazy-compilation=5
     - --stress-background-compile
-    # GC stress (invalidate JIT assumptions)
     - --stress-gc-during-compilation
     - --stress-flush-code
     - --stress-compaction
@@ -344,4 +325,4 @@ configs:
     last_build_version: null
     last_build_date: null
     d8_binary_size: null
-last_build: '2026-04-10T14:04:56Z'
+last_build: '2026-04-10T16:03:32Z'
