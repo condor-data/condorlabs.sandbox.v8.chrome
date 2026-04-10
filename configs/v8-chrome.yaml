@@ -4,9 +4,10 @@ last_detected_version: 14.7.173.18
 last_discovery: null
 base:
   v8_enable_sandbox: true
-  target_cpu: "x64"
+  target_cpu: x64
   treat_warnings_as_errors: false
-  cc_wrapper: "env CCACHE_SLOPPINESS=time_macros,include_file_mtime CCACHE_COMPRESS=1 CCACHE_NOHASHDIR=1 ccache"
+  cc_wrapper: env CCACHE_SLOPPINESS=time_macros,include_file_mtime CCACHE_COMPRESS=1
+    CCACHE_NOHASHDIR=1 ccache
   clang_use_chrome_plugins: false
   v8_enable_i18n_support: false
   concurrent_links: 1
@@ -136,6 +137,7 @@ configs:
       symbol_level: 1
       v8_enable_backtrace: true
       v8_enable_object_print: true
+      is_asan: false
     runtime_flags:
     - --allow-natives-syntax
     - --expose-gc
@@ -157,6 +159,7 @@ configs:
       symbol_level: 1
       v8_enable_backtrace: true
       v8_enable_object_print: true
+      is_asan: false
     runtime_flags:
     - --allow-natives-syntax
     - --expose-gc
