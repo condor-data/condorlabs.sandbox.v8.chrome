@@ -7,8 +7,7 @@
 # Exemplos de dispatch:
 #   1 config:   gh workflow run build-d8.yml -f configs='["fast"]'
 #   4 paralelo: gh workflow run build-d8.yml -f configs='["fast","fuzz","asan","tsan"]'
-#   com arm64:  gh workflow run build-d8.yml -f configs='["fast"]' -f platforms='["x64","arm64"]'
-#   tudo:       gh workflow run build-d8.yml -f configs='["fast","fuzz","asan","tsan"]' -f platforms='["x64","arm64"]'
+#   tudo:       gh workflow run build-d8.yml -f configs='["fast","fuzz","asan","tsan"]' -f v8_version=14.7.173.18
 #
 # Pipeline por config: pre-validate → setup-v8 → build → post-validate
 # Tudo YAML-driven. Nada hardcoded. ZERO secrets. ZERO custo.
@@ -28,11 +27,7 @@ on:
         required: true
         default: '["fast"]'
         type: string
-      platforms:
-        description: 'Platforms JSON array (ex: ["x64"] ou ["x64","arm64"])'
-        required: false
-        default: '["x64"]'
-        type: string
+
 
 permissions:
   contents: write
@@ -106,7 +101,6 @@ jobs:
           import json, os, yaml
 
           configs = json.loads('${{ inputs.configs }}')
-          platforms = json.loads('${{ inputs.platforms }}')
 
           # Validar que cada config existe no YAML
           with open('configs/v8-chrome.yaml') as f:
@@ -118,21 +112,10 @@ jobs:
                   print(f"::error::Config '{c}' NAO EXISTE no YAML! Disponiveis: {sorted(available)}")
                   raise SystemExit(1)
 
-          # Gerar matrix
-          include = []
-          for c in configs:
-              for p in platforms:
-                  runner = "ubuntu-24.04-arm" if p == "arm64" else "ubuntu-latest"
-                  include.append({
-                      "config": c,
-                      "platform": p,
-                      "runner": runner,
-                  })
-
+          # Gerar matrix (x64 only)
+          include = [{"config": c} for c in configs]
           matrix = {"include": include}
-          print(f"::notice::Matrix: {len(include)} jobs ({configs} x {platforms})")
-          for item in include:
-              print(f"  - {item['config']} / {item['platform']} -> {item['runner']}")
+          print(f"::notice::Matrix: {len(include)} jobs — {configs}")
 
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"MATRIX={json.dumps(matrix)}\n")
@@ -146,7 +129,7 @@ jobs:
     strategy:
       fail-fast: false  # um config falhando NAO cancela os outros
       matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-latest
     timeout-minutes: 180
 
     steps:
@@ -154,7 +137,7 @@ jobs:
         uses: actions/checkout@v6
 
       # PHASE 1: PRE-VALIDATE
-      - name: "Phase 1: Pre-validate (${{ matrix.config }}/${{ matrix.platform }})"
+      - name: "Phase 1: Pre-validate (${{ matrix.config }})"
         uses: ./.github/actions/pre-validate
         with:
           yaml_file: configs/v8-chrome.yaml
