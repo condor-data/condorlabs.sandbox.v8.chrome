@@ -30,11 +30,11 @@ configs:
     - --allow-natives-syntax
     - --expose-gc
     last_build_status: FAIL
-    last_build_version: '/home/runner/work/_temp/2f11ace2-5b51-4d02-964c-ba8c03df1fb0.sh:
+    last_build_version: '/home/runner/work/_temp/01402d4b-feb7-4a0f-87a6-7b554dec79bd.sh:
       line 3: ./v8-build/v8/out/d8-fast/d8: No such file or directory
 
       unknown'
-    last_build_date: '2026-04-10T00:49:32Z'
+    last_build_date: '2026-04-10T00:52:54Z'
     d8_binary_size: 'du: cannot access ''./v8-build/v8/out/d8-fast/d8'': No such file
       or directory
 
@@ -167,4 +167,4 @@ configs:
     last_build_version: null
     last_build_date: null
     d8_binary_size: null
-last_build: '2026-04-10T00:49:32Z'
+last_build: '2026-04-10T00:52:54Z'
