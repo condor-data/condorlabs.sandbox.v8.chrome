@@ -33,10 +33,10 @@ configs:
     - --verify-bytecode-full
     last_build_status: OK
     last_build_version: 14.7.173.18
-    last_build_date: '2026-04-10T12:47:14Z'
+    last_build_date: '2026-04-10T14:04:56Z'
     d8_binary_size: 2.6M
     runtime_discovered:
-      introspect_date: '2026-04-10T12:47:13Z'
+      introspect_date: '2026-04-10T14:04:55Z'
       sanitizers_in_binary:
         asan: false
         tsan: false
@@ -245,4 +245,4 @@ configs:
     last_build_version: null
     last_build_date: null
     d8_binary_size: null
-last_build: '2026-04-10T12:47:14Z'
+last_build: '2026-04-10T14:04:56Z'
