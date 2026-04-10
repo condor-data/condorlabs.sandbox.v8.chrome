@@ -41,6 +41,10 @@ runs:
         echo "D8_PATH=${D8_PATH}" >> $GITHUB_OUTPUT
         echo "BUILD_DIR=${BUILD_DIR}" >> $GITHUB_OUTPUT
 
+        echo "::group::args.gn content"
+        cat "v8-build/v8/out/d8-${CONFIG}/args.gn"
+        echo "::endgroup::"
+
         echo "::group::gn gen"
         cd v8-build/v8
         gn gen "out/d8-${CONFIG}" || {
@@ -48,6 +52,17 @@ runs:
           echo "::error::gn gen FALHOU!"
           exit 1
         }
+        echo "::endgroup::"
+
+        echo "::group::GN args RESOLVED (diagnostico)"
+        echo "=== Critical flags resolved by GN ==="
+        gn args "out/d8-${CONFIG}" --list --short 2>&1 | grep -E "memory_corruption|enable_sandbox|use_safe_libcxx|use_custom_libcxx" || true
+        echo ""
+        echo "=== V8_ENABLE_MEMORY_CORRUPTION_API in ninja files ==="
+        grep -r "V8_ENABLE_MEMORY_CORRUPTION_API" "out/d8-${CONFIG}/obj/BUILD.ninja" "out/d8-${CONFIG}/build.ninja" 2>/dev/null | head -5 || echo "NOT FOUND in ninja files!"
+        echo ""
+        echo "=== Defines in v8_base target ==="
+        grep -r "V8_ENABLE_MEMORY_CORRUPTION_API" "out/d8-${CONFIG}/" --include="*.ninja" 2>/dev/null | head -5 || echo "NOT FOUND in any .ninja file!"
         echo "::endgroup::"
 
         echo "::group::autoninja (d8-${CONFIG})"
@@ -67,6 +82,14 @@ runs:
         echo "::group::Build stats"
         echo "d8 binary: $(du -sh "out/d8-${CONFIG}/d8" | cut -f1)"
         ccache -s
+        echo "::endgroup::"
+
+        echo "::group::Binary verification (nm)"
+        echo "=== Flag symbol type (r=readonly, b/d=writable) ==="
+        nm "out/d8-${CONFIG}/libv8.so" 2>/dev/null | grep "FLAGDEFAULT_expose_memory_corruption_api" || echo "Symbol not found in libv8.so!"
+        echo ""
+        echo "=== SandboxTesting symbols ==="
+        nm "out/d8-${CONFIG}/libv8.so" 2>/dev/null | grep "SandboxTesting" | head -5 || echo "No SandboxTesting symbols!"
         echo "::endgroup::"
 
     - name: "[BUILD] Resources after build"
