@@ -33,7 +33,7 @@ configs:
     - --verify-bytecode-full
     last_build_status: OK
     last_build_version: 14.7.173.18
-    last_build_date: '2026-04-10T04:20:05Z'
+    last_build_date: '2026-04-10T09:34:50Z'
     d8_binary_size: 4.4M
   fuzz:
     description: Fuzzing automatizado com crash filter (static, dcheck)
@@ -239,4 +239,4 @@ configs:
     last_build_version: null
     last_build_date: null
     d8_binary_size: null
-last_build: '2026-04-10T04:20:05Z'
+last_build: '2026-04-10T09:34:50Z'
