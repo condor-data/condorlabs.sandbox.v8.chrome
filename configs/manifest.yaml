@@ -17,6 +17,8 @@ required_configs:
   - ubsan
   - wasm-stress
   - jit-stress
+  - fuzzilli
+  - fuzzilli-asan
 
 # Families válidas
 valid_families:
