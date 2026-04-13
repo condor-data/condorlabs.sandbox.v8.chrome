@@ -171,8 +171,11 @@ class CorrelationValidator:
         elif family == "workerd":
             # Workerd configs usam Bazel, nao GN. Pular validacao de GN args.
             pass
+        elif family == "fuzzer":
+            # Fuzzer configs (e.g. fuzzilli). Tratado como sandbox para GN args.
+            pass
         elif family != "unknown":
-            errors.append(f"FAMILY [{config_name}]: family desconhecida '{family}'. Use: sandbox | sanitizer | workerd")
+            errors.append(f"FAMILY [{config_name}]: family desconhecida '{family}'. Use: sandbox | sanitizer | workerd | fuzzer")
 
         # 5. Tipo + existencia (contra catalogo JSON)
         for k, v in gn_args.items():
