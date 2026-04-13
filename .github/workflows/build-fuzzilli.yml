@@ -112,11 +112,12 @@ jobs:
           # Binary
           cp .build/release/FuzzilliCli "$OUTDIR/"
 
-          # Swift runtime libs needed at runtime
+          # Swift runtime libs — copy ALL .so from swift/linux to guarantee self-contained binary
+          # Previous approach of listing individual libs missed libFoundation/libFoundationEssentials
           SWIFT_LIBS="/opt/swift/usr/lib/swift/linux"
-          for lib in libswiftCore libswiftGlibc libswift_Concurrency libswiftDispatch libswift_StringProcessing libswift_RegexParser libswiftFoundation libBlocksRuntime libdispatch; do
-            find "$SWIFT_LIBS" -name "${lib}*" -exec cp {} "$OUTDIR/" \; 2>/dev/null || true
-          done
+          find "$SWIFT_LIBS" -maxdepth 1 -name "*.so" -exec cp {} "$OUTDIR/" \;
+          # Also check build directory for any libs the build produced
+          find /tmp/fuzzilli/.build/release -maxdepth 1 -name "*.so" -exec cp {} "$OUTDIR/" \; 2>/dev/null || true
 
           # Metadata
           cat > "$OUTDIR/BUILD_INFO.txt" << EOF
