@@ -348,9 +348,13 @@ def cmd_post(yaml_path: str, config_name: str, d8_path: str):
             sandbox_api_flag = "--sandbox-fuzzing"
             break
 
+    # Decidir expectativa pelo FLAG do YAML, nao pela family.
+    # Family=fuzzer pode ou nao ter MCA: fuzzilli tem false, fuzzilli-mca tem true.
+    # A fonte de verdade eh merged["v8_enable_memory_corruption_api"].
     total += 1
-    if family == "sandbox":
-        print(f"[5] Sandbox API exposta (family=sandbox, flag={sandbox_api_flag})...", end=" ", flush=True)
+    mca_enabled = merged.get("v8_enable_memory_corruption_api") is True
+    if mca_enabled:
+        print(f"[5] Sandbox API exposta (MCA=true, family={family}, flag={sandbox_api_flag})...", end=" ", flush=True)
         r = subprocess.run([d8_path, sandbox_api_flag, "-e", "print(typeof Sandbox)"],
                           capture_output=True, text=True, timeout=10)
         if "object" in r.stdout:
@@ -363,17 +367,17 @@ def cmd_post(yaml_path: str, config_name: str, d8_path: str):
             print(f"FAILED (typeof Sandbox = '{r.stdout.strip()}')")
             if r.stderr.strip():
                 print(f"    stderr: {r.stderr.strip()[:200]}")
-            errors.append("Sandbox API nao exposta em build sandbox!")
-    elif family in ("sanitizer", "fuzzer"):
-        print(f"[5] Sandbox API AUSENTE (family={family})...", end=" ", flush=True)
+            errors.append("Sandbox API nao exposta apesar de v8_enable_memory_corruption_api=true!")
+    else:
+        print(f"[5] Sandbox API AUSENTE (MCA=false, family={family})...", end=" ", flush=True)
         r = subprocess.run([d8_path, "--expose-memory-corruption-api", "-e", "print(typeof Sandbox)"],
                           capture_output=True, text=True, timeout=10)
         if "object" not in r.stdout:
             print("PASSED (ausente, correto)")
             passed += 1
         else:
-            print("FAILED (API exposta em sanitizer build!)")
-            errors.append("Sandbox API exposta em sanitizer! memory_corruption_api deveria ser false")
+            print("FAILED (API exposta mesmo com memory_corruption_api=false!)")
+            errors.append("Sandbox API exposta mas v8_enable_memory_corruption_api=false no YAML")
 
     # 6-7: Testes sandbox-specific
     if family == "sandbox":
@@ -546,15 +550,17 @@ def cmd_introspect(yaml_path: str, config_name: str, d8_path: str, build_dir: st
             probe_json = json.loads("\n".join(lines[json_start:json_end]))
             report["sources"]["runtime_probe"] = probe_json
 
-            # Verificar Sandbox API
-            if family == "sandbox" and not probe_json.get("build", {}).get("sandbox_api"):
-                print(f"  ERRO: Sandbox API nao detectada em runtime (family=sandbox)!")
-                errors.append("Sandbox API ausente em runtime")
-            elif family in ("sanitizer", "fuzzer") and probe_json.get("build", {}).get("sandbox_api"):
-                print(f"  ERRO: Sandbox API detectada em runtime (family={family})!")
-                errors.append(f"Sandbox API presente em {family} build")
+            # Verificar Sandbox API — decidir pelo flag do YAML, nao pela family.
+            yaml_mca = merged.get("v8_enable_memory_corruption_api") is True
+            probe_sbx = probe_json.get("build", {}).get("sandbox_api")
+            if yaml_mca and not probe_sbx:
+                print(f"  ERRO: Sandbox API nao detectada em runtime (MCA=true no YAML)!")
+                errors.append("Sandbox API ausente em runtime apesar de v8_enable_memory_corruption_api=true")
+            elif (not yaml_mca) and probe_sbx:
+                print(f"  ERRO: Sandbox API detectada em runtime (MCA=false no YAML)!")
+                errors.append("Sandbox API presente apesar de v8_enable_memory_corruption_api=false")
             else:
-                print(f"  OK: Sandbox API = {probe_json.get('build', {}).get('sandbox_api')}")
+                print(f"  OK: Sandbox API = {probe_sbx} (yaml MCA={yaml_mca})")
 
             # verify_heap
             yaml_vh = merged.get("v8_enable_verify_heap", False)
