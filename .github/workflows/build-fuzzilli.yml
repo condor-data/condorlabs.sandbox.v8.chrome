@@ -1,0 +1,174 @@
+###############################################################################
+# Build FuzzilliCli — Coverage-guided JS fuzzer (Google Project Zero)
+#
+# Compiles the FuzzilliCli Swift binary that connects to d8-fuzzilli via REPRL.
+# Produces a self-contained tarball with FuzzilliCli + required Swift runtime libs.
+#
+# Usage:
+#   gh workflow run build-fuzzilli.yml
+#   gh workflow run build-fuzzilli.yml -f fuzzilli_rev=main
+#   gh workflow run build-fuzzilli.yml -f swift_version=6.0.3
+#
+# After build: download artifact, extract, run:
+#   ./FuzzilliCli --profile=v8 --storagePath=./corpus /path/to/d8-fuzzilli
+###############################################################################
+name: "Build FuzzilliCli (Fuzzilli Coverage-Guided Fuzzer)"
+
+on:
+  workflow_dispatch:
+    inputs:
+      fuzzilli_rev:
+        description: "Fuzzilli git ref (branch/tag/commit). Default: main"
+        required: false
+        default: "main"
+        type: string
+      swift_version:
+        description: "Swift toolchain version. Default: 6.0.3"
+        required: false
+        default: "6.0.3"
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-fuzzilli:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout (for artifact metadata)
+        uses: actions/checkout@v6
+
+      - name: Install Swift ${{ inputs.swift_version }}
+        run: |
+          set -euo pipefail
+          SWIFT_VER="${{ inputs.swift_version }}"
+          SWIFT_PLATFORM="ubuntu24.04"
+          SWIFT_URL="https://download.swift.org/swift-${SWIFT_VER}-release/ubuntu2404/swift-${SWIFT_VER}-RELEASE/swift-${SWIFT_VER}-RELEASE-${SWIFT_PLATFORM}.tar.gz"
+
+          echo "::group::Download Swift ${SWIFT_VER}"
+          echo "URL: ${SWIFT_URL}"
+          curl -fSL --retry 3 --max-time 300 "$SWIFT_URL" -o /tmp/swift.tar.gz || {
+            # Fallback: try ubuntu22.04
+            SWIFT_PLATFORM="ubuntu22.04"
+            SWIFT_URL="https://download.swift.org/swift-${SWIFT_VER}-release/ubuntu2204/swift-${SWIFT_VER}-RELEASE/swift-${SWIFT_VER}-RELEASE-${SWIFT_PLATFORM}.tar.gz"
+            echo "::warning::ubuntu24.04 not found, trying ubuntu22.04: ${SWIFT_URL}"
+            curl -fSL --retry 3 --max-time 300 "$SWIFT_URL" -o /tmp/swift.tar.gz
+          }
+          echo "::endgroup::"
+
+          echo "::group::Extract Swift"
+          sudo mkdir -p /opt/swift
+          sudo tar xzf /tmp/swift.tar.gz -C /opt/swift --strip-components=1
+          rm /tmp/swift.tar.gz
+          echo "/opt/swift/usr/bin" >> $GITHUB_PATH
+          echo "::endgroup::"
+
+          echo "::group::Verify Swift"
+          /opt/swift/usr/bin/swift --version
+          echo "::endgroup::"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libsqlite3-dev libncurses-dev
+
+      - name: Clone Fuzzilli
+        run: |
+          set -euo pipefail
+          REV="${{ inputs.fuzzilli_rev }}"
+          echo "::group::Clone fuzzilli @ ${REV}"
+          git clone --depth=1 --branch="${REV}" \
+            https://github.com/googleprojectzero/fuzzilli.git /tmp/fuzzilli 2>/dev/null || \
+          git clone https://github.com/googleprojectzero/fuzzilli.git /tmp/fuzzilli && \
+            cd /tmp/fuzzilli && git checkout "${REV}"
+          echo "Commit: $(cd /tmp/fuzzilli && git rev-parse HEAD)"
+          echo "::endgroup::"
+
+      - name: Build FuzzilliCli (release)
+        run: |
+          set -euo pipefail
+          cd /tmp/fuzzilli
+
+          echo "::group::swift build -c release"
+          swift build -c release 2>&1 | tail -50
+          echo "::endgroup::"
+
+          echo "::group::Verify binary"
+          BINARY=".build/release/FuzzilliCli"
+          ls -lh "$BINARY"
+          file "$BINARY"
+          "$BINARY" --help 2>&1 | head -20 || true
+          echo "::endgroup::"
+
+      - name: Package artifact
+        run: |
+          set -euo pipefail
+          cd /tmp/fuzzilli
+          OUTDIR="/tmp/fuzzilli-dist"
+          mkdir -p "$OUTDIR"
+
+          # Binary
+          cp .build/release/FuzzilliCli "$OUTDIR/"
+
+          # Swift runtime libs needed at runtime
+          SWIFT_LIBS="/opt/swift/usr/lib/swift/linux"
+          for lib in libswiftCore libswiftGlibc libswift_Concurrency libswiftDispatch libswift_StringProcessing libswift_RegexParser libswiftFoundation libBlocksRuntime libdispatch; do
+            find "$SWIFT_LIBS" -name "${lib}*" -exec cp {} "$OUTDIR/" \; 2>/dev/null || true
+          done
+
+          # Metadata
+          cat > "$OUTDIR/BUILD_INFO.txt" << EOF
+          fuzzilli_rev: ${{ inputs.fuzzilli_rev }}
+          fuzzilli_commit: $(cd /tmp/fuzzilli && git rev-parse HEAD)
+          swift_version: ${{ inputs.swift_version }}
+          build_date: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+          runner: $(uname -a)
+          usage: ./FuzzilliCli --profile=v8 --storagePath=./corpus /path/to/d8-fuzzilli
+          EOF
+
+          # V8 profile reference (users need to know the right profile)
+          if [ -f Sources/FuzzilliCli/Profiles/V8Profile.swift ]; then
+            cp Sources/FuzzilliCli/Profiles/V8Profile.swift "$OUTDIR/"
+          fi
+
+          echo "::group::Package contents"
+          ls -lh "$OUTDIR/"
+          echo "::endgroup::"
+
+          # Tarball
+          cd /tmp
+          tar czf fuzzilli-cli.tar.gz -C fuzzilli-dist .
+          echo "Tarball: $(du -sh fuzzilli-cli.tar.gz)"
+
+      - name: Upload FuzzilliCli artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzzilli-cli-${{ inputs.swift_version }}
+          path: /tmp/fuzzilli-cli.tar.gz
+          retention-days: 90
+          if-no-files-found: error
+          compression-level: 6
+
+      - name: Summary
+        run: |
+          COMMIT=$(cd /tmp/fuzzilli && git rev-parse --short HEAD)
+          SIZE=$(du -sh /tmp/fuzzilli-dist/FuzzilliCli | cut -f1)
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          ## FuzzilliCli Build ✅
+
+          | | |
+          |---|---|
+          | **Fuzzilli** | \`${{ inputs.fuzzilli_rev }}\` @ \`${COMMIT}\` |
+          | **Swift** | \`${{ inputs.swift_version }}\` |
+          | **Binary size** | ${SIZE} |
+          | **Profile** | \`--profile=v8\` |
+
+          ### Usage
+          \`\`\`bash
+          tar xzf fuzzilli-cli-*.tar.gz -C /opt/fuzzilli/
+          export LD_LIBRARY_PATH=/opt/fuzzilli:\$LD_LIBRARY_PATH
+          /opt/fuzzilli/FuzzilliCli --profile=v8 --storagePath=./corpus /path/to/d8-fuzzilli
+          \`\`\`
+          EOF
