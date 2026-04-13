@@ -335,7 +335,7 @@ configs:
     d8_binary_size: 60M
   fuzzilli:
     description: Fuzzilli REPRL coverage-guided fuzzing (sem sanitizer, max exec/s)
-    family: sandbox
+    family: fuzzer
     gn_args:
       is_debug: false
       dcheck_always_on: true

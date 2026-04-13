@@ -81,6 +81,10 @@ def cmd_pre(yaml_path: str, config_name: str):
             errors.append("SANDBOX com is_asan=true! ASAN mata o crash filter.")
         if merged.get("is_tsan") is True:
             errors.append("SANDBOX com is_tsan=true! Use family: sanitizer.")
+    elif family == "fuzzer":
+        # Fuzzer family: v8_fuzzilli=true, no MCA needed, no sanitizer required
+        if merged.get("v8_fuzzilli") is not True:
+            errors.append("FUZZER sem v8_fuzzilli=true! Requer fuzzilli habilitado.")
     else:
         errors.append(f"Family desconhecida: '{family}'")
 
@@ -270,7 +274,8 @@ def cmd_post(yaml_path: str, config_name: str, d8_path: str):
 
     # 1. d8 executa
     total += 1
-    print(f"[1/{7 if family == 'sandbox' else 5}] d8 executa...", end=" ", flush=True)
+    total_steps = 7 if family == "sandbox" else 5
+    print(f"[1/{total_steps}] d8 executa...", end=" ", flush=True)
     r = subprocess.run([d8_path, "-e", "print('OK')"], capture_output=True, text=True, timeout=10)
     if r.returncode == 0 and "OK" in r.stdout:
         print("PASSED")
@@ -359,8 +364,8 @@ def cmd_post(yaml_path: str, config_name: str, d8_path: str):
             if r.stderr.strip():
                 print(f"    stderr: {r.stderr.strip()[:200]}")
             errors.append("Sandbox API nao exposta em build sandbox!")
-    else:
-        print(f"[5] Sandbox API AUSENTE (family=sanitizer)...", end=" ", flush=True)
+    elif family in ("sanitizer", "fuzzer"):
+        print(f"[5] Sandbox API AUSENTE (family={family})...", end=" ", flush=True)
         r = subprocess.run([d8_path, "--expose-memory-corruption-api", "-e", "print(typeof Sandbox)"],
                           capture_output=True, text=True, timeout=10)
         if "object" not in r.stdout:
@@ -545,9 +550,9 @@ def cmd_introspect(yaml_path: str, config_name: str, d8_path: str, build_dir: st
             if family == "sandbox" and not probe_json.get("build", {}).get("sandbox_api"):
                 print(f"  ERRO: Sandbox API nao detectada em runtime (family=sandbox)!")
                 errors.append("Sandbox API ausente em runtime")
-            elif family == "sanitizer" and probe_json.get("build", {}).get("sandbox_api"):
-                print(f"  ERRO: Sandbox API detectada em runtime (family=sanitizer)!")
-                errors.append("Sandbox API presente em sanitizer build")
+            elif family in ("sanitizer", "fuzzer") and probe_json.get("build", {}).get("sandbox_api"):
+                print(f"  ERRO: Sandbox API detectada em runtime (family={family})!")
+                errors.append(f"Sandbox API presente em {family} build")
             else:
                 print(f"  OK: Sandbox API = {probe_json.get('build', {}).get('sandbox_api')}")
 
