@@ -410,8 +410,8 @@ configs:
         tsan: false
         ubsan: true
   fuzzilli-mca:
-    description: Fuzzilli REPRL + Memory Corruption API (natural MCA trigger via
-      coverage-guided corpus — combines v8_fuzzilli=true with v8_enable_memory_corruption_api=true
+    description: Fuzzilli REPRL + Memory Corruption API (natural MCA trigger via coverage-guided
+      corpus — combines v8_fuzzilli=true with v8_enable_memory_corruption_api=true
       so Fuzzilli can discover Sandbox.* primitives natively)
     family: fuzzer
     gn_args:
@@ -440,8 +440,13 @@ configs:
     - --stress-compaction
     - --stress-flush-code
     - --gc-interval=100
-    last_build_status: PENDING
-    last_build_version: PENDING
-    last_build_date: ''
-    d8_binary_size: PENDING
-last_build: '2026-04-13T18:25:29Z'
+    last_build_status: OK
+    last_build_version: '[COV] no shared memory bitmap available, skipping
+
+      [COV] edge counters initialized. Shared memory: anonymous shmem with 1680105
+      edges
+
+      14.7.173.18'
+    last_build_date: '2026-04-13T21:16:48Z'
+    d8_binary_size: 390M
+last_build: '2026-04-13T21:16:48Z'
