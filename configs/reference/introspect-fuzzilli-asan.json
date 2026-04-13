@@ -1,0 +1,21 @@
+{
+  "config": "fuzzilli-asan",
+  "family": "sanitizer",
+  "sources": {
+    "gn_overrides": {
+      "error": ""
+    },
+    "gn_defines": {
+      "error": ""
+    },
+    "binary_sanitizers": {
+      "asan": true,
+      "tsan": false,
+      "ubsan": true
+    },
+    "runtime_probe": {
+      "error": "exit 1",
+      "stderr": "[COV] no shared memory bitmap available, skipping\n[COV] edge counters initialized. Shared memory: anonymous shmem with 1631348 edges\n"
+    }
+  }
+}

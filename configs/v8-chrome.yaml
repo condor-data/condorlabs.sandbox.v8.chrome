@@ -394,8 +394,19 @@ configs:
     - --stress-compaction
     - --stress-flush-code
     - --gc-interval=50
-    last_build_status: null
-    last_build_version: null
-    last_build_date: null
-    d8_binary_size: null
-last_build: '2026-04-13T16:56:43Z'
+    last_build_status: OK
+    last_build_version: '[COV] no shared memory bitmap available, skipping
+
+      [COV] edge counters initialized. Shared memory: anonymous shmem with 1631348
+      edges
+
+      14.7.173.18'
+    last_build_date: '2026-04-13T18:25:29Z'
+    d8_binary_size: 600M
+    runtime_discovered:
+      introspect_date: '2026-04-13T18:25:28Z'
+      sanitizers_in_binary:
+        asan: true
+        tsan: false
+        ubsan: true
+last_build: '2026-04-13T18:25:29Z'
