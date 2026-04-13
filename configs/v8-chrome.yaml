@@ -409,4 +409,39 @@ configs:
         asan: true
         tsan: false
         ubsan: true
+  fuzzilli-mca:
+    description: Fuzzilli REPRL + Memory Corruption API (natural MCA trigger via
+      coverage-guided corpus — combines v8_fuzzilli=true with v8_enable_memory_corruption_api=true
+      so Fuzzilli can discover Sandbox.* primitives natively)
+    family: fuzzer
+    gn_args:
+      is_debug: false
+      dcheck_always_on: true
+      symbol_level: 1
+      is_component_build: false
+      v8_monolithic: true
+      v8_use_external_startup_data: false
+      v8_fuzzilli: true
+      v8_enable_memory_corruption_api: true
+      v8_enable_verify_heap: true
+      is_asan: false
+      sanitizer_coverage_flags: trace-pc-guard
+    runtime_flags:
+    - --sandbox-fuzzing
+    - --allow-natives-syntax
+    - --expose-gc
+    - --hole-fuzzing
+    - --jit-fuzzing
+    - --stress-ic
+    - --stress-maglev
+    - --maglev-future
+    - --stress-concurrent-inlining
+    - --deopt-every-n-times=100
+    - --stress-compaction
+    - --stress-flush-code
+    - --gc-interval=100
+    last_build_status: PENDING
+    last_build_version: PENDING
+    last_build_date: ''
+    d8_binary_size: PENDING
 last_build: '2026-04-13T18:25:29Z'
