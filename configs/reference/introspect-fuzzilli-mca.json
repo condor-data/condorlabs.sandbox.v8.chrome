@@ -1,0 +1,21 @@
+{
+  "config": "fuzzilli-mca",
+  "family": "fuzzer",
+  "sources": {
+    "gn_overrides": {
+      "error": ""
+    },
+    "gn_defines": {
+      "error": ""
+    },
+    "binary_sanitizers": {
+      "asan": false,
+      "tsan": false,
+      "ubsan": true
+    },
+    "runtime_probe": {
+      "error": "exit 1",
+      "stderr": "[COV] no shared memory bitmap available, skipping\n[COV] edge counters initialized. Shared memory: anonymous shmem with 822636 edges\nSandbox testing mode is enabled. Only sandbox violations will be reported, all other crashes will be ignored.\nSandbox bounds: [0x37d000000000,0x38d000000000)\nV8 is running with experimental features enabled. Stability and security will suffer.\n"
+    }
+  }
+}
