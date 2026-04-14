@@ -334,14 +334,30 @@ configs:
     last_build_date: '2026-04-10T17:15:27Z'
     d8_binary_size: 60M
   fuzzilli:
-    description: Fuzzilli REPRL coverage-guided fuzzing (sem sanitizer, max exec/s)
+    description: Fuzzilli REPRL coverage-guided fuzzing for --profile=v8 (dcheck on,
+      MCA off, DEBUG defined — matches V8Profile.swift startup tests)
     family: fuzzer
     gn_args:
+      # Match upstream Fuzzilli fuzzbuild.sh (Targets/V8/fuzzbuild.sh).
+      # Key facts validated in V8 14.7.173.18:
+      # - v8_fuzzilli=true defines V8_FUZZILLI, links src/fuzzilli/{cov,fuzzilli}.cc,
+      #   and enables the REPRL loop in d8.cc (no --fuzzilli flag needed; REPRL is
+      #   auto-entered when fds 100-103 are wired up by the parent).
+      # - sanitizer_coverage_flags="trace-pc-guard" is required for SanCov to write
+      #   num_edges into SHM_ID-mapped shared memory. Without it Fuzzilli sees 0 edges.
+      # - v8_static_library=true is what upstream fuzzbuild.sh uses; v8_monolithic=true
+      #   previously produced a broken binary that wrote 0 edges.
+      # - v8_enable_partition_alloc must be off for Fuzzilli (partition_alloc interacts
+      #   badly with SanCov edge guard storage).
+      # - dcheck_always_on=true → #define DEBUG, which the V8Profile startup test
+      #   expects (fuzzilli('FUZZILLI_CRASH', 8) must crash). For v8Sandbox profile
+      #   it must be FALSE — see fuzzilli-mca config below.
       is_debug: false
       dcheck_always_on: true
       symbol_level: 1
       is_component_build: false
-      v8_monolithic: true
+      v8_static_library: true
+      v8_enable_partition_alloc: false
       v8_use_external_startup_data: false
       v8_fuzzilli: true
       v8_enable_memory_corruption_api: false
@@ -366,7 +382,13 @@ configs:
     last_build_date: '2026-04-13T16:56:43Z'
     d8_binary_size: ERROR:no-binary
   fuzzilli-asan:
-    description: Fuzzilli REPRL + ASAN para crash detection
+    description: Fuzzilli REPRL + ASAN for crash detection. NOTE/WARN — ASAN intercepts
+      SanCov's __sanitizer_cov_trace_pc_guard_init callbacks and routes edge guard
+      walking into ASAN's own coverage pipeline, so Fuzzilli's cov.cc sees 0 edges
+      and exits with "Coverage bitmap size could not be determined". Until we wire
+      up -fsanitize-coverage=trace-pc-guard explicitly (not via sanitizer_coverage_flags
+      which is ignored in ASAN builds) this variant cannot feed Fuzzilli. Keep building
+      it for non-Fuzzilli direct PoC replay where ASAN crash detection is useful.
     family: sanitizer
     gn_args:
       is_debug: false
@@ -382,8 +404,6 @@ configs:
       v8_enable_backtrace: true
       v8_enable_object_print: true
     runtime_flags:
-    - --fuzzilli-coverage-instrumentation
-    - --fuzzilli-reprl
     - --allow-natives-syntax
     - --expose-gc
     - --verify-heap
@@ -410,20 +430,31 @@ configs:
         tsan: false
         ubsan: true
   fuzzilli-mca:
-    description: Fuzzilli REPRL + Memory Corruption API (natural MCA trigger via coverage-guided
-      corpus — combines v8_fuzzilli=true with v8_enable_memory_corruption_api=true
-      so Fuzzilli can discover Sandbox.* primitives natively)
+    description: Fuzzilli REPRL + Memory Corruption API for --profile=v8Sandbox (DEBUG
+      NOT defined, MCA on, Sandbox.* primitives exposed — matches V8SandboxProfile.swift
+      startup tests which require fuzzilli('FUZZILLI_CRASH', 8).shouldSucceed)
     family: fuzzer
     gn_args:
+      # v8Sandbox profile in Fuzzilli has INVERTED crash semantics compared to v8
+      # profile because it uses the sandbox crash filter (--sandbox-fuzzing):
+      # - FUZZILLI_CRASH 0,1,5,10 (non-sandbox-violation crashes) must NOT surface
+      #   as crashes — the filter exits 0.
+      # - FUZZILLI_CRASH 3,4,6,9,11 (sandbox violations) MUST surface as crashes.
+      # - FUZZILLI_CRASH 8 (DEBUG sanity) must SUCCEED, which means DEBUG must NOT
+      #   be defined, which means dcheck_always_on MUST be false.
+      #
+      # Previous build had dcheck_always_on=true, causing Fuzzilli startup test 8
+      # to see SIGTRAP on d8's DCHECK path and abort with "did not execute successfully".
       is_debug: false
-      dcheck_always_on: true
+      dcheck_always_on: false
       symbol_level: 1
       is_component_build: false
-      v8_monolithic: true
+      v8_static_library: true
+      v8_enable_partition_alloc: false
       v8_use_external_startup_data: false
       v8_fuzzilli: true
       v8_enable_memory_corruption_api: true
-      v8_enable_verify_heap: true
+      v8_enable_verify_heap: false  # requires dcheck_always_on; v8Sandbox filter catches corruption instead
       is_asan: false
       sanitizer_coverage_flags: trace-pc-guard
     runtime_flags:
